@@ -1,0 +1,28 @@
+GO_BUILD_COMMAND=env GOPATH=${GOPATH} GOCACHE=/tmp go build -modcacherw -buildmode=exe
+PORTOSHIM_BINARY=portoshim
+PORTOSHIM_SRCS_DIR=./cmd/portoshim
+LOGSHIM_BINARY=logshim
+LOGSHIM_SRCS_DIR=./cmd/logshim
+DESTDIR=/usr/sbin
+
+
+all: clean build
+
+build: ${PORTOSHIM_BINARY} ${LOGSHIM_BINARY}
+
+install:
+	cp ./${PORTOSHIM_BINARY} ${DESTDIR}/${PORTOSHIM_BINARY}
+	cp ./${LOGSHIM_BINARY} ${DESTDIR}/${LOGSHIM_BINARY}
+
+uninstall:
+	rm -f ${DESTDIR}/${PORTOSHIM_BINARY}
+	rm -f ${DESTDIR}/${LOGSHIM_BINARY}
+
+clean:
+	rm -f ${PORTOSHIM_BINARY} ${LOGSHIM_BINARY}
+
+${PORTOSHIM_BINARY}:
+	${GO_BUILD_COMMAND} -o $@ ${PORTOSHIM_SRCS_DIR}
+
+${LOGSHIM_BINARY}:
+	${GO_BUILD_COMMAND} -o $@ ${LOGSHIM_SRCS_DIR}
