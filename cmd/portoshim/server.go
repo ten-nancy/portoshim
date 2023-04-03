@@ -165,7 +165,7 @@ func (server *PortoshimServer) Shutdown() {
 }
 
 func (server *PortoshimServer) ShutdownCtx() (ctx context.Context) {
-	sig := make(chan os.Signal)
+	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, unix.SIGINT, unix.SIGTERM)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
