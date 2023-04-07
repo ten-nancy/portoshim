@@ -115,8 +115,12 @@ func NewPortoshimServer(socketPath string) (*PortoshimServer, error) {
 		return nil, err
 	}
 
-	err = unlinkStaleSocket(socketPath)
-	if err != nil {
+	if err = os.MkdirAll(Cfg.Portoshim.VolumesDir, 0755); err != nil {
+		zap.S().Fatalf("cannot create volumes dir: %v", err)
+		return nil, fmt.Errorf("cannot create volumes dir: %v", err)
+	}
+
+	if err = unlinkStaleSocket(socketPath); err != nil {
 		zap.S().Fatalf("failed to unlink staled socket: %v", err)
 	}
 

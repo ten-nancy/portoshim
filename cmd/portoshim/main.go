@@ -15,34 +15,27 @@ func getCurrentFuncName() string {
 }
 
 func main() {
+	var err error
+	configPath := flag.String("config", "/etc/portoshim.yaml", "YAML config file path")
 	debug := flag.Bool("debug", false, "show debug logs")
 	flag.Parse()
 
-	err := os.Mkdir(LogsDir, 0755)
-	if err != nil && !os.IsExist(err) {
-		_, _ = fmt.Fprintf(os.Stderr, "cannot create logs dir: %v", err)
+	if err = InitConfig(*configPath); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "сannot init portoshim config: %v\n", err)
 		return
 	}
 
-	err = CreateZapLogger(*debug)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "%v", err)
+	if err = InitLogger(*debug); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "cannot init logger: %v\n", err)
 		return
 	}
 
-	err = os.Mkdir(VolumesDir, 0755)
-	if err != nil && !os.IsExist(err) {
-		zap.S().Fatalf("cannot create volumes dir: %v", err)
-		return
-	}
-
-	err = InitKnownRegistries()
-	if err != nil {
+	if err = InitKnownRegistries(); err != nil {
 		zap.S().Fatalf("cannot init known registries: %v", err)
 		return
 	}
 
-	server, err := NewPortoshimServer(PortoshimSocket)
+	server, err := NewPortoshimServer(Cfg.Portoshim.Socket)
 	if err != nil {
 		zap.S().Fatalf("server init error: %v", err)
 		return

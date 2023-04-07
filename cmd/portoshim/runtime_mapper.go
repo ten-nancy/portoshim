@@ -21,8 +21,7 @@ import (
 )
 
 const (
-	runtimeName = "porto"
-	pauseImage  = "k8s.gcr.io/pause:3.7"
+	kubeResourceDomain = "portoshim.net"
 	// loopback + default
 	networkAttachCount     = 2
 	ifPrefixName           = "veth"
@@ -44,8 +43,8 @@ func NewPortoshimRuntimeMapper() (*PortoshimRuntimeMapper, error) {
 	rm := &PortoshimRuntimeMapper{}
 
 	netPlugin, err := cni.New(cni.WithMinNetworkCount(networkAttachCount),
-		cni.WithPluginConfDir(NetworkPluginConfDir),
-		cni.WithPluginDir([]string{NetworkPluginBinDir}),
+		cni.WithPluginConfDir(Cfg.CNI.ConfDir),
+		cni.WithPluginDir([]string{Cfg.CNI.BinDir}),
 		cni.WithInterfacePrefix(ifPrefixName))
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize cni: %w", err)
@@ -78,7 +77,7 @@ func NewPortoshimRuntimeMapper() (*PortoshimRuntimeMapper, error) {
 		"dead":       v1.PodSandboxState_SANDBOX_NOTREADY,
 	}
 
-	rm.streamingServer, err = NewStreamingServer(fmt.Sprintf("%s:%s", StreamingServerAddress, StreamingServerPort))
+	rm.streamingServer, err = NewStreamingServer(fmt.Sprintf("%s:%d", Cfg.StreamingServer.Address, Cfg.StreamingServer.Port))
 	if err != nil {
 		zap.S().Warnf("failed to create streaming server: %v", err)
 	}
@@ -142,7 +141,7 @@ func (m *PortoshimRuntimeMapper) prepareContainerNetwork(ctx context.Context, id
 		return fmt.Errorf("cni wasn't initialized")
 	}
 
-	netnsPath, err := netns.NewNetNS(NetnsDir)
+	netnsPath, err := netns.NewNetNS(Cfg.CNI.NetnsDir)
 	if err != nil {
 		return fmt.Errorf("failed to create network namespace, pod %s: %w", id, err)
 	}
@@ -187,12 +186,12 @@ func (m *PortoshimRuntimeMapper) prepareContainerNetwork(ctx context.Context, id
 	}
 
 	for k, v := range cfg.GetAnnotations() {
-		if k == filepath.Join(KubeResourceDomain, "net-tx") {
+		if k == filepath.Join(kubeResourceDomain, "net-tx") {
 			err = pc.SetProperty(id, "net_limit", fmt.Sprintf("%s: %s", ifPrefixName, v))
 			if err != nil {
 				return fmt.Errorf("failed set porto prop net_limit, pod %s: %w", id, err)
 			}
-		} else if k == filepath.Join(KubeResourceDomain, "net-rx") {
+		} else if k == filepath.Join(kubeResourceDomain, "net-rx") {
 			err = pc.SetProperty(id, "net_rx_limit", fmt.Sprintf("%s: %s", ifPrefixName, v))
 			if err != nil {
 				return fmt.Errorf("failed set porto prop net_rx_limit, pod %s: %w", id, err)
@@ -423,7 +422,7 @@ func prepareContainerEnv(ctx context.Context, id string, env []*v1.KeyValue, ima
 func prepareContainerRoot(ctx context.Context, id string, rootPath string, image string) (string, error) {
 	pc := getPortoClient(ctx)
 
-	rootAbsPath := filepath.Join(VolumesDir, id)
+	rootAbsPath := filepath.Join(Cfg.Portoshim.VolumesDir, id)
 	if rootPath == "" {
 		rootPath = rootAbsPath
 	}
@@ -807,7 +806,7 @@ func getContainerStats(ctx context.Context, id string) *v1.ContainerStats {
 		WritableLayer: &v1.FilesystemUsage{
 			Timestamp: timestamp,
 			FsId: &v1.FilesystemIdentifier{
-				Mountpoint: VolumesDir + "/" + id,
+				Mountpoint: filepath.Join(Cfg.Portoshim.VolumesDir, id),
 			},
 			UsedBytes:  &v1.UInt64Value{Value: 0},
 			InodesUsed: &v1.UInt64Value{Value: 0},
@@ -822,7 +821,7 @@ func getContainerImage(ctx context.Context, id string) string {
 		return ""
 	}
 
-	imageDescriptions, err := pc.ListVolumes(VolumesDir+"/"+id, id)
+	imageDescriptions, err := pc.ListVolumes(filepath.Join(Cfg.Portoshim.VolumesDir, id), id)
 	if err != nil {
 		zap.S().Warnf("%s: %v", getCurrentFuncName(), err)
 		return ""
@@ -880,7 +879,7 @@ func (m *PortoshimRuntimeMapper) Version(ctx context.Context, req *v1.VersionReq
 	// TODO: temprorary use tag as a RuntimeApiVersion
 	return &v1.VersionResponse{
 		Version:           req.GetVersion(),
-		RuntimeName:       runtimeName,
+		RuntimeName:       Cfg.Porto.RuntimeName,
 		RuntimeVersion:    tag,
 		RuntimeApiVersion: tag,
 	}, nil
@@ -896,7 +895,7 @@ func (m *PortoshimRuntimeMapper) RunPodSandbox(ctx context.Context, req *v1.RunP
 	}
 
 	// get image
-	image, err := pc.DockerImageStatus(pauseImage, "")
+	image, err := pc.DockerImageStatus(Cfg.Images.PauseImage, "")
 	if err != nil {
 		_ = pc.Destroy(id)
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
@@ -917,7 +916,7 @@ func (m *PortoshimRuntimeMapper) RunPodSandbox(ctx context.Context, req *v1.RunP
 	}
 
 	// root
-	rootPath, err := prepareContainerRoot(ctx, id, "", pauseImage)
+	rootPath, err := prepareContainerRoot(ctx, id, "", Cfg.Images.PauseImage)
 	if err != nil {
 		_ = pc.Destroy(id)
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
@@ -986,7 +985,7 @@ func (m *PortoshimRuntimeMapper) RemovePodSandbox(ctx context.Context, req *v1.R
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
-	rootPath := VolumesDir + "/" + id
+	rootPath := filepath.Join(Cfg.Portoshim.VolumesDir, id)
 	if err = os.RemoveAll(rootPath); err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
@@ -994,7 +993,7 @@ func (m *PortoshimRuntimeMapper) RemovePodSandbox(ctx context.Context, req *v1.R
 	// removes the network from the pod
 	netnsProp := parsePropertyNetNS(netProp)
 	if netnsProp != "" {
-		netnsPath := netns.LoadNetNS(filepath.Join(NetnsDir, netnsProp))
+		netnsPath := netns.LoadNetNS(filepath.Join(Cfg.CNI.NetnsDir, netnsProp))
 		if err = m.netPlugin.Remove(ctx, id, netnsPath.GetPath(), cni.WithLabels(map[string]string{})); err != nil {
 			return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 		}
@@ -1223,7 +1222,7 @@ func (m *PortoshimRuntimeMapper) RemoveContainer(ctx context.Context, req *v1.Re
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
-	rootPath := VolumesDir + "/" + id
+	rootPath := filepath.Join(Cfg.Portoshim.VolumesDir, id)
 	err = os.RemoveAll(rootPath)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
@@ -1348,7 +1347,7 @@ func (m *PortoshimRuntimeMapper) ReopenContainerLog(ctx context.Context, req *v1
 
 func (m *PortoshimRuntimeMapper) ExecSync(ctx context.Context, req *v1.ExecSyncRequest) (*v1.ExecSyncResponse, error) {
 	pc := getPortoClient(ctx)
-	execContainerID := req.GetContainerId() + "/" + createID("exec-sync")
+	execContainerID := filepath.Join(req.GetContainerId(), createID("exec-sync"))
 	if err := pc.Create(execContainerID); err != nil {
 		return nil, fmt.Errorf("failed to create exec container %s: %w", execContainerID, err)
 	}

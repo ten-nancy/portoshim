@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync/atomic"
 	"syscall"
 	"unsafe"
@@ -12,6 +13,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"golang.org/x/term"
+	"gopkg.in/yaml.v2"
 )
 
 func DebugLog(ctx context.Context, template string, args ...interface{}) {
@@ -27,8 +29,27 @@ func log(l func(string, ...interface{}), ctx context.Context, template string, a
 	l(logPrefix+template, args...)
 }
 
+func InitLogger(debug bool) error {
+	err := os.MkdirAll(Cfg.Portoshim.LogsDir, 0755)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "cannot create logs dir: %v\n", err)
+		return fmt.Errorf("cannot create logs dir: %v", err)
+	}
+
+	if err = CreateZapLogger(debug); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "cannot create logger: %v\n", err)
+		return fmt.Errorf("cannot create logger: %v", err)
+	}
+
+	if err = LogConfig(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "cannot print config to logs: %v\n", err)
+	}
+
+	return nil
+}
+
 func CreateZapLogger(debug bool) error {
-	logger, err := newZapLogger(PortoshimLogPath, debug)
+	logger, err := newZapLogger(filepath.Join(Cfg.Portoshim.LogsDir, "portoshim.log"), debug)
 	if err != nil {
 		return fmt.Errorf("cannot create logger: %v", err)
 	}
@@ -126,4 +147,15 @@ func (m *sink) Write(p []byte) (n int, err error) {
 
 func (m *sink) Sync() error {
 	return m.getFile().Sync()
+}
+
+func LogConfig() error {
+	c, err := yaml.Marshal(Cfg)
+	if err != nil {
+		return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+	}
+
+	zap.S().Infof("portoshim config\n%s\n", c)
+
+	return nil
 }

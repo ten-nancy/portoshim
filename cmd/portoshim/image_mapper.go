@@ -104,7 +104,7 @@ func (m *PortoshimImageMapper) RemoveImage(ctx context.Context, req *v1.RemoveIm
 }
 func (m *PortoshimImageMapper) ImageFsInfo(ctx context.Context, req *v1.ImageFsInfoRequest) (*v1.ImageFsInfoResponse, error) {
 	stat := syscall.Statfs_t{}
-	err := syscall.Statfs(ImagesDir, &stat)
+	err := syscall.Statfs(Cfg.Porto.ImagesDir, &stat)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
@@ -114,7 +114,7 @@ func (m *PortoshimImageMapper) ImageFsInfo(ctx context.Context, req *v1.ImageFsI
 			{
 				Timestamp: time.Now().UnixNano(),
 				FsId: &v1.FilesystemIdentifier{
-					Mountpoint: ImagesDir,
+					Mountpoint: Cfg.Porto.ImagesDir,
 				},
 				UsedBytes:  &v1.UInt64Value{Value: (stat.Blocks - stat.Bfree) * uint64(stat.Bsize)},
 				InodesUsed: &v1.UInt64Value{Value: stat.Files - stat.Ffree},
