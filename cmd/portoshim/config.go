@@ -56,7 +56,7 @@ StreamingServer:
     Address: "[::]"
     Port:    7255
 Images:
-    PauseImage: k8s.gcr.io/pause:3.7
+    PauseImage: registry.k8s.io/pause:3.7
 `
 
 var Cfg *PortoshimConfig

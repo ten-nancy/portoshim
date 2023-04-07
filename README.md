@@ -142,7 +142,7 @@ Portoshim configuration file is a YAML file. It has following fields:
 - **Images**:
 
     - **PauseImage**  
-        default: ```k8s.gcr.io/pause:3.7```  
+        default: ```registry.k8s.io/pause:3.7```  
         Pause image for pods.  
 
     - **Registries**  
