@@ -19,11 +19,11 @@ const (
 )
 
 var (
-	KnownRegistries = map[string]*RegistryInfo{
-		defaultDockerRegistry: &RegistryInfo{
+	KnownRegistries = map[string]RegistryInfo{
+		defaultDockerRegistry: RegistryInfo{
 			Host: defaultDockerRegistry,
 		},
-		"quay.io": &RegistryInfo{
+		"quay.io": RegistryInfo{
 			Host:     "quay.io",
 			AuthPath: "https://quay.io/v2/auth",
 		},
@@ -60,7 +60,7 @@ func InitKnownRegistries() error {
 	return nil
 }
 
-func GetImageRegistry(name string) *RegistryInfo {
+func GetImageRegistry(name string) RegistryInfo {
 	host := defaultDockerRegistry
 
 	slashPos := strings.Index(name, "/")
@@ -72,5 +72,5 @@ func GetImageRegistry(name string) *RegistryInfo {
 		return registry
 	}
 
-	return nil
+	return RegistryInfo{}
 }

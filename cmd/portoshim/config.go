@@ -33,8 +33,8 @@ type PortoshimConfig struct {
 	} `yaml:"StreamingServer"`
 
 	Images struct {
-		PauseImage string          `yaml:"PauseImage"`
-		Registries []*RegistryInfo `yaml:"Registries"`
+		PauseImage string         `yaml:"PauseImage"`
+		Registries []RegistryInfo `yaml:"Registries"`
 	} `yaml:"Images"`
 }
 
