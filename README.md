@@ -173,6 +173,6 @@ Portoshim:
 Images:
     Registries:
     - Host: registry-1.docker.io
-        AuthPath: https://auth.docker.io/token
-        AuthService: registry.docker.io
+      AuthPath: https://auth.docker.io/token
+      AuthService: registry.docker.io
 ```
