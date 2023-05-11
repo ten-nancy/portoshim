@@ -1,0 +1,47 @@
+portoshim (1.0.4) stable; urgency=low
+  [ kndrvt ]
+      registry: remove pointer to RegistryInfo
+  last commit: 4a559b26b091b28d100b3bd4bec4574bb3cbe3b9
+
+ -- Lev Pantyukhin <kndrvt@yandex-team.ru>  Tue, 11 Apr 2023 10:52:32 -0000
+
+portoshim (1.0.3) stable; urgency=low
+  [ kndrvt ]
+      k8s: replace pause image from k8s.gcr.io/pause:3.7 to registry.k8s.io/pause:3.7
+      config: add portoshim configuration via yaml file
+      portoshim: add LICENSE and AUTHORS
+      portoshim: remove .gitattributes
+  last commit: d6bf9cc9e9b92f4f0c88b8e84c2de2e3ed253d4b
+
+ -- Lev Pantyukhin <kndrvt@yandex-team.ru>  Fri, 07 Apr 2023 14:36:40 -0000
+
+portoshim (1.0.2) stable; urgency=low
+  [ kndrvt ]
+      portoshim: make logshim static
+  last commit: 26daa767cb212a7741a76b57b8e48db293c14298
+
+ -- Lev Pantyukhin <kndrvt@yandex-team.ru>  Thu, 30 Mar 2023 16:32:35 -0000
+
+portoshim (1.0.1) stable; urgency=low
+  [ kndrvt ]
+      runtime_mapper: remove dependence on github.com/containerd/containerd/pkg/cri/annotations
+  last commit: d6c97b5f90a9ce1eb498870d593b3e16bb1e9ed6
+
+ -- Lev Pantyukhin <kndrvt@yandex-team.ru>  Tue, 28 Mar 2023 16:06:29 -0000
+
+portoshim (1.0.0) stable; urgency=low
+
+  [ Lev Pantyukhin ]
+  * runtime_mapper: set limits on containers too
+  * runtime_mapper: add default metadata labels and add nil checks in prepareContainerNetwork
+  * debian: add Makefile and deb package building
+  last commit: 8b3db9bfe9d1445831d2d2e89a035f88718a30d8
+
+ -- Lev Pantyukhin <kndrvt@yandex-team.ru>  Tue, 24 Jan 2023 16:20:56 +0300
+
+portoshim (0.0.1) stable; urgency=low
+
+  [ Lev Pantyukhin ]
+  * portoshim: initial commit
+
+ -- Lev Pantyukhin <kndrvt@yandex-team.ru>  Wed, 18 Jan 2023 17:04:14 +0300

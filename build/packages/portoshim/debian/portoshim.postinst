@@ -1,0 +1,15 @@
+#!/bin/sh
+# postinst script
+
+##DEBHELPER##
+
+case "$1" in
+    configure)
+    if [ -x "/bin/systemctl" ] ; then
+      /bin/systemctl enable portoshim.service || true
+      /bin/systemctl restart portoshim.service || true
+    fi
+    ;;
+esac
+
+exit 0
