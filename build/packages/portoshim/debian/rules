@@ -1,0 +1,14 @@
+#!/usr/bin/make -f
+
+DESTDIR=$(CURDIR)/debian/portoshim/usr/sbin
+export DH_VERBOSE=1
+
+override_dh_auto_install:
+	dh_auto_install --destdir=${DESTDIR}
+
+override_dh_install:
+	ls ${DESTDIR}/portoshim
+	ls ${DESTDIR}/logshim
+
+%:
+	dh $@

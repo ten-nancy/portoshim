@@ -1,0 +1,11 @@
+Source: portoshim
+Maintainer: Porto Team <porto@yandex-team.ru>
+Build-Depends:
+ make
+
+Package: portoshim
+Section: utils
+Priority: extra
+Architecture: any
+Depends: porto
+Description: CRI plugin for Porto
