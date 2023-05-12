@@ -1,7 +1,5 @@
 Source: portoshim
 Maintainer: Porto Team <porto@yandex-team.ru>
-Build-Depends:
- make
 
 Package: portoshim
 Section: utils
