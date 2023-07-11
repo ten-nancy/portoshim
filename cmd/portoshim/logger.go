@@ -24,6 +24,10 @@ func InfoLog(ctx context.Context, template string, args ...interface{}) {
 	log(zap.S().Infof, ctx, template, args...)
 }
 
+func WarnLog(ctx context.Context, template string, args ...interface{}) {
+	log(zap.S().Warnf, ctx, template, args...)
+}
+
 func log(l func(string, ...interface{}), ctx context.Context, template string, args ...interface{}) {
 	logPrefix := fmt.Sprintf("[%s] ", getRequestID(ctx))
 	l(logPrefix+template, args...)

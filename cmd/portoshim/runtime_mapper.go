@@ -128,7 +128,7 @@ func (m *PortoshimRuntimeMapper) prepareContainerNetwork(ctx context.Context, id
 
 	if cfg == nil || cfg.GetLinux() == nil || cfg.GetLinux().GetSecurityContext() == nil ||
 		cfg.GetLinux().GetSecurityContext().GetNamespaceOptions() == nil {
-		zap.S().Warnf("cannot get network namespace options")
+		WarnLog(ctx, "cannot get network namespace options")
 		return nil
 	}
 
@@ -222,7 +222,7 @@ func prepareContainerResources(ctx context.Context, id string, cfg *v1.LinuxCont
 		return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 	if err := pc.SetProperty(id, "memory_guarantee", strconv.FormatInt(cfg.MemoryLimitInBytes, 10)); err != nil {
-		return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+		WarnLog(ctx, "cannot set memory_guarantee: %v", err)
 	}
 
 	return nil
@@ -429,7 +429,7 @@ func prepareContainerRoot(ctx context.Context, id string, rootPath string, image
 	err := os.Mkdir(rootAbsPath, 0755)
 	if err != nil {
 		if os.IsExist(err) {
-			zap.S().Warnf("%s: directory already exists: %s", getCurrentFuncName(), rootPath)
+			WarnLog(ctx, "%s: directory already exists: %s", getCurrentFuncName(), rootPath)
 		} else {
 			return rootAbsPath, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 		}
@@ -509,7 +509,7 @@ func prepareContainerMounts(ctx context.Context, id string, mounts []*v1.Mount) 
 				if err == nil {
 					break
 				}
-				zap.S().Warnf("%s waiting for a %s", id, mount.HostPath)
+				WarnLog(ctx, "%s waiting for a %s", id, mount.HostPath)
 				time.Sleep(1000)
 			}
 		}
@@ -621,7 +621,7 @@ func getLabels(ctx context.Context, id string, prefix string) map[string]string 
 
 	labels, err := pc.GetProperty(id, "labels")
 	if err != nil {
-		zap.S().Warnf("%s: %v", getCurrentFuncName(), err)
+		WarnLog(ctx, "%s: %v", getCurrentFuncName(), err)
 		return map[string]string{}
 	}
 
@@ -660,7 +660,7 @@ func getUintProperty(ctx context.Context, id string, property string) uint64 {
 
 	value, err := strconv.ParseUint(valueString, 10, 64)
 	if err != nil {
-		zap.S().Warnf("%s: %v", getCurrentFuncName(), err)
+		WarnLog(ctx, "%s: %v", getCurrentFuncName(), err)
 		return 0
 	}
 
@@ -677,7 +677,7 @@ func getIntProperty(ctx context.Context, id string, property string) int64 {
 
 	value, err := strconv.ParseInt(valueString, 10, 64)
 	if err != nil {
-		zap.S().Warnf("%s: %v", getCurrentFuncName(), err)
+		WarnLog(ctx, "%s: %v", getCurrentFuncName(), err)
 		return 0
 	}
 
@@ -715,7 +715,7 @@ func getPodStats(ctx context.Context, id string) *v1.PodSandboxStats {
 
 	response, err := pc.ListContainers(id + "/***")
 	if err != nil {
-		zap.S().Warnf("%s: %v", getCurrentFuncName(), err)
+		WarnLog(ctx, "%s: %v", getCurrentFuncName(), err)
 		return nil
 	}
 
@@ -823,7 +823,7 @@ func getContainerImage(ctx context.Context, id string) string {
 
 	imageDescriptions, err := pc.ListVolumes(filepath.Join(Cfg.Portoshim.VolumesDir, id), id)
 	if err != nil {
-		zap.S().Warnf("%s: %v", getCurrentFuncName(), err)
+		WarnLog(ctx, "%s: %v", getCurrentFuncName(), err)
 		return ""
 	}
 	return imageDescriptions[0].Properties["image"]
@@ -834,7 +834,7 @@ func getPodSandboxNetworkStatus(ctx context.Context, id string) *v1.PodSandboxNe
 
 	addresses, err := pc.GetProperty(id, "ip")
 	if err != nil {
-		zap.S().Warnf("%s: %v", getCurrentFuncName(), err)
+		WarnLog(ctx, "%s: %v", getCurrentFuncName(), err)
 		return &v1.PodSandboxNetworkStatus{}
 	}
 
