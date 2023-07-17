@@ -383,11 +383,16 @@ func prepareContainerCommand(ctx context.Context, id string, cfgCmd, cfgArgs, im
 	return pc.UpdateFromSpec(req, false)
 }
 
-func envToVars(env []string) []*pb.TContainerEnvVar {
+func envToVars(ctx context.Context, env []string) []*pb.TContainerEnvVar {
 	var envVars []*pb.TContainerEnvVar
 
-	for _, i := range env {
-		keyValue := strings.SplitN(i, "=", 2)
+	for _, v := range env {
+		keyValue := strings.SplitN(v, "=", 2)
+		if len(keyValue) < 2 {
+			WarnLog(ctx, "skip environment variable parsing: %s", v)
+			continue
+		}
+
 		envVars = append(envVars, &pb.TContainerEnvVar{
 			Name:  &keyValue[0],
 			Value: &keyValue[1],
@@ -400,7 +405,7 @@ func envToVars(env []string) []*pb.TContainerEnvVar {
 func prepareContainerEnv(ctx context.Context, id string, env []*v1.KeyValue, image *pb.TDockerImage) ([]*pb.TContainerEnvVar, error) {
 	pc := getPortoClient(ctx)
 
-	envVars := envToVars(image.GetConfig().GetEnv())
+	envVars := envToVars(ctx, image.GetConfig().GetEnv())
 
 	for _, i := range env {
 		envVars = append(envVars, &pb.TContainerEnvVar{
@@ -1360,7 +1365,19 @@ func (m *PortoshimRuntimeMapper) ExecSync(ctx context.Context, req *v1.ExecSyncR
 	if err := pc.SetProperty(execContainerID, "env", env); err != nil {
 		return nil, fmt.Errorf("failed to set env for exec container %s: %w", execContainerID, err)
 	}
-	if err := prepareContainerCommand(ctx, execContainerID, req.GetCmd(), nil, nil, envToVars(strings.Split(env, ";")), true); err != nil {
+
+	var envSlice []string
+	if strings.Contains(env, "\\;") {
+		// These actions for case when env has separator ";" in value of variable (e.g. "NAME1=value1;NAME2=some\;value2")
+		specChar := string(rune(0x10FFFF))
+		envSlice = strings.Split(strings.ReplaceAll(env, "\\;", specChar), ";")
+		for i, s := range envSlice {
+			envSlice[i] = strings.ReplaceAll(s, specChar, ";")
+		}
+	} else {
+		envSlice = strings.Split(env, ";")
+	}
+	if err := prepareContainerCommand(ctx, execContainerID, req.GetCmd(), nil, nil, envToVars(ctx, envSlice), true); err != nil {
 		return nil, fmt.Errorf("failed to prepare command '%v' for exec container %s: %w", req.Cmd, execContainerID, err)
 	}
 
