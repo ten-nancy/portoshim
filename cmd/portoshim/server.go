@@ -53,6 +53,8 @@ func portoClientContext(ctx context.Context) (context.Context, error) {
 		return ctx, fmt.Errorf("connect to porto: %v", err)
 	}
 
+	portoClient.SetTimeout(Cfg.Porto.SocketTimeout)
+
 	c := ctx
 	//nolint:sa1029
 	c = context.WithValue(c, "requestId", fmt.Sprintf("%08x", rand.Intn(4294967296)))

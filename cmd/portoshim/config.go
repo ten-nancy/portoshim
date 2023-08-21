@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v2"
 )
@@ -16,9 +17,10 @@ type PortoshimConfig struct {
 	} `yaml:"Portoshim"`
 
 	Porto struct {
-		RuntimeName string `yaml:"RuntimeName"`
-		Socket      string `yaml:"Socket"`
-		ImagesDir   string `yaml:"ImagesDir"`
+		RuntimeName   string        `yaml:"RuntimeName"`
+		Socket        string        `yaml:"Socket"`
+		SocketTimeout time.Duration `yaml:"SocketTimeout"`
+		ImagesDir     string        `yaml:"ImagesDir"`
 	} `yaml:"Porto"`
 
 	CNI struct {
@@ -47,6 +49,7 @@ Portoshim:
 Porto:
     RuntimeName: porto
     Socket:      /run/portod.socket
+    SocketTimeout: 5m
     ImagesDir:   /place/porto_docker
 CNI:
     ConfDir:  /etc/cni/net.d
