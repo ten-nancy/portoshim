@@ -6,10 +6,11 @@ require (
 	github.com/containerd/containerd v1.5.14
 	github.com/containerd/go-cni v1.1.7
 	github.com/creack/pty v1.1.9
-	github.com/ten-nancy/porto/src/api/go/porto v0.0.0-20230331163120-fc64e59ffd39
+	github.com/ten-nancy/porto/src/api/go/porto v0.0.0-20230829223000-246e68cb7364
 	go.uber.org/zap v1.21.0
 	golang.org/x/sys v0.3.0
 	google.golang.org/grpc v1.49.0
+	gopkg.in/yaml.v2 v2.4.0
 	k8s.io/apimachinery v0.25.3
 	k8s.io/client-go v0.25.3
 	k8s.io/cri-api v0.23.5
@@ -42,7 +43,6 @@ require (
 	golang.org/x/time v0.0.0-20220210224613-90d013bbcef8 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
-	gopkg.in/yaml.v2 v2.4.0 // indirect
 	k8s.io/api v0.25.3 // indirect
 	k8s.io/apiserver v0.25.3 // indirect
 	k8s.io/klog/v2 v2.80.1 // indirect
