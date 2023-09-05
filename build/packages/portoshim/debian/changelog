@@ -1,3 +1,14 @@
+portoshim (1.0.6) stable; urgency=low
+  [ kndrvt ]
+      go.mod: update Porto API version
+      server: add Porto socket timeout
+      license: add CONTRIBUTING.md and CODE_OF_CONDUCT.md
+      runtime_mapper: fix env parsing in ExecSync
+      logger: add shell for warning logs and relax memory_guarantee set
+  last commit: 35da2261b8724e05305c07a15d06e77f243e85df
+
+ -- Lev Pantyukhin <kndrvt@yandex-team.ru>  Mon, 04 Sep 2023 14:49:35 -0000
+
 portoshim (1.0.5) stable; urgency=low
   [ kndrvt ]
       add YAML files for Github CI and files for Debian package external build
