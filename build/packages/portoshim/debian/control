@@ -5,5 +5,5 @@ Package: portoshim
 Section: utils
 Priority: extra
 Architecture: any
-Depends: porto
+Depends: porto | yandex-porto
 Description: CRI plugin for Porto
