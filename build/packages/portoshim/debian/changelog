@@ -1,3 +1,11 @@
+portoshim (1.0.7) stable; urgency=low
+  [ kndrvt ]
+      readme: add socket timeout to documentation
+      build: add yet another dependence
+  last commit: 9aaf820f5f970411e68479a25e67c9eacbc1effd
+
+ -- Lev Pantyukhin <kndrvt@yandex-team.ru>  Fri, 22 Sep 2023 09:08:31 -0000
+
 portoshim (1.0.6) stable; urgency=low
   [ kndrvt ]
       go.mod: update Porto API version
