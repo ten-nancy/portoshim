@@ -105,8 +105,11 @@ Portoshim configuration file is a YAML file. It has following fields:
 
     - **Socket**  
         default: ```/run/portod.socket```  
-        Porto socket path. Should not be changed. 
+        Porto socket path. Should not be changed.  
 
+    - **SocketTimeout**
+        default: ```5m```  
+        Timeout for connections with Porto via socket. Portoshim establishes one connection per request.  
 
     - **ImagesDir**  
         default: ```/place/porto_docker```  
