@@ -100,6 +100,9 @@ func serverInterceptor(ctx context.Context,
 	h, err := handler(ctx, req)
 
 	DebugLog(ctx, "%+v", h)
+	if err != nil {
+		WarnLog(ctx, "%v", err)
+	}
 	InfoLog(ctx, "%s time: %d ms", info.FullMethod, time.Since(start).Milliseconds()-startTime)
 
 	return h, err

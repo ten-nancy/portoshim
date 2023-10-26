@@ -13,7 +13,6 @@ import (
 
 	"github.com/containerd/containerd/pkg/netns"
 	cni "github.com/containerd/go-cni"
-	"github.com/ten-nancy/porto/src/api/go/porto"
 	pb "github.com/ten-nancy/porto/src/api/go/porto/pkg/rpc"
 	"go.uber.org/zap"
 	v1 "k8s.io/cri-api/pkg/apis/runtime/v1"
@@ -139,30 +138,20 @@ func convertContainerState(state string) v1.ContainerState {
 }
 
 // resources
-func prepareContainerResources(ctx context.Context, id string, cfg *v1.LinuxContainerResources) error {
-	pc := getPortoClient(ctx)
-
+func prepareResources(spec *pb.TContainerSpec, cfg *v1.LinuxContainerResources) {
 	if cfg == nil {
-		return nil
+		return
 	}
 
 	// cpu
-	if err := pc.SetProperty(id, "cpu_limit", fmt.Sprintf("%fc", float64(cfg.CpuQuota)/100000)); err != nil {
-		return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-	}
-	if err := pc.SetProperty(id, "cpu_guarantee", fmt.Sprintf("%fc", float64(cfg.CpuQuota)/100000)); err != nil {
-		return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-	}
+	cpuValue := float64(cfg.CpuQuota) / 100000
+	spec.CpuLimit = &cpuValue
+	spec.CpuGuarantee = &cpuValue
 
 	// memory
-	if err := pc.SetProperty(id, "memory_limit", strconv.FormatInt(cfg.MemoryLimitInBytes, 10)); err != nil {
-		return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-	}
-	if err := pc.SetProperty(id, "memory_guarantee", strconv.FormatInt(cfg.MemoryLimitInBytes, 10)); err != nil {
-		WarnLog(ctx, "cannot set memory_guarantee: %v", err)
-	}
-
-	return nil
+	memoryValue := uint64(cfg.MemoryLimitInBytes)
+	spec.MemoryLimit = &memoryValue
+	spec.MemoryGuarantee = &memoryValue
 }
 
 // command and env
@@ -239,8 +228,9 @@ func envToVars(ctx context.Context, env []string) []*pb.TContainerEnvVar {
 	return envVars
 }
 
-func prepareContainerCommand(ctx context.Context, id string, cfgCmd, cfgArgs, imgCmd []string, env []*pb.TContainerEnvVar, disableLogShim bool) error {
-	pc := getPortoClient(ctx)
+func prepareCommand(ctx context.Context, spec *pb.TContainerSpec, cfgCmd, cfgArgs, imgCmd []string, disableLogShim bool) error {
+	id := spec.GetName()
+	env := spec.GetEnv().GetVar()
 
 	cmd := imgCmd
 	if len(cfgCmd) > 0 {
@@ -257,10 +247,7 @@ func prepareContainerCommand(ctx context.Context, id string, cfgCmd, cfgArgs, im
 	}
 	// Try to find out binary path inside chroot if we have non-absolute command
 	if cmd[0][0] != '/' {
-		rootPath, err := pc.GetProperty(id, "root_path")
-		if err != nil {
-			return fmt.Errorf("failed to get root_path for container %s: %w", id, err)
-		}
+		rootPath := spec.GetRoot()
 		execPath := findChrootExecutable(ctx, findEnvPathOrDefault(env), rootPath, cmd[0])
 		if execPath != "" {
 			cmd[0] = execPath
@@ -274,35 +261,43 @@ func prepareContainerCommand(ctx context.Context, id string, cfgCmd, cfgArgs, im
 		cmd = wrapCmdWithLogShim(cmd)
 	}
 
-	req := &pb.TContainerSpec{
-		Name: &id,
-		CommandArgv: &pb.TContainerCommandArgv{
-			Argv: cmd,
-		},
+	spec.CommandArgv = &pb.TContainerCommandArgv{
+		Argv: cmd,
 	}
-	return pc.UpdateFromSpec(req, false)
+
+	return nil
 }
 
-func prepareContainerEnv(ctx context.Context, id string, env []*v1.KeyValue, image *pb.TDockerImage) ([]*pb.TContainerEnvVar, error) {
-	pc := getPortoClient(ctx)
+func prepareExecEnv(ctx context.Context, spec *pb.TContainerSpec, env string) {
+	var envSlice []string
+	if strings.Contains(env, "\\;") {
+		// These actions for case when env has separator ";" in value of variable (e.g. "NAME1=value1;NAME2=some\;value2")
+		specChar := string(rune(0x10FFFF))
+		envSlice = strings.Split(strings.ReplaceAll(env, "\\;", specChar), ";")
+		for i, s := range envSlice {
+			envSlice[i] = strings.ReplaceAll(s, specChar, ";")
+		}
+	} else {
+		envSlice = strings.Split(env, ";")
+	}
+	spec.Env = &pb.TContainerEnv{
+		Var: envToVars(ctx, envSlice),
+	}
+}
 
+func prepareEnv(ctx context.Context, spec *pb.TContainerSpec, env []*v1.KeyValue, image *pb.TDockerImage) {
 	envVars := envToVars(ctx, image.GetConfig().GetEnv())
 
-	for _, i := range env {
+	for _, e := range env {
 		envVars = append(envVars, &pb.TContainerEnvVar{
-			Name:  &i.Key,
-			Value: &i.Value,
+			Name:  &e.Key,
+			Value: &e.Value,
 		})
 	}
 
-	req := &pb.TContainerSpec{
-		Name: &id,
-		Env: &pb.TContainerEnv{
-			Var: envVars,
-		},
+	spec.Env = &pb.TContainerEnv{
+		Var: envVars,
 	}
-
-	return envVars, pc.UpdateFromSpec(req, false)
 }
 
 // root and mounts
@@ -316,62 +311,50 @@ func sliceContainsString(s []string, str string) bool {
 	return false
 }
 
-func prepareContainerRoot(ctx context.Context, id string, rootPath string, image string) (string, error) {
-	pc := getPortoClient(ctx)
-
+func prepareRoot(ctx context.Context, spec *pb.TContainerSpec, volumes *[]*pb.TVolumeSpec, rootPath string, image string) error {
+	id := spec.GetName()
 	rootAbsPath := filepath.Join(Cfg.Portoshim.VolumesDir, id)
 	if rootPath == "" {
 		rootPath = rootAbsPath
 	}
+
 	err := os.Mkdir(rootAbsPath, 0755)
 	if err != nil {
 		if os.IsExist(err) {
 			WarnLog(ctx, "%s: directory already exists: %s", getCurrentFuncName(), rootPath)
 		} else {
-			return rootAbsPath, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+			return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 		}
 	}
-	_, err = pc.CreateVolume(rootAbsPath, map[string]string{
-		"containers": id,
-		"image":      image,
-		"backend":    "overlay",
-	})
-	if err != nil {
-		_ = os.RemoveAll(rootAbsPath)
-		return rootAbsPath, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-	}
-	if err = pc.SetProperty(id, "root", rootPath); err != nil {
-		_ = os.RemoveAll(rootAbsPath)
-		return rootAbsPath, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+
+	root := pb.TVolumeSpec{
+		Links: []*pb.TVolumeLink{&pb.TVolumeLink{
+			Container: &id,
+			Target:    getStringPointer("/"),
+		}},
+		Backend: getStringPointer("overlay"),
+		Image:   &image,
 	}
 
-	return rootAbsPath, nil
-}
+	*volumes = append(*volumes, &root)
+	spec.Root = &rootPath
 
-func prepareContainerMount(ctx context.Context, id string, mount *v1.Mount) error {
-	pc := getPortoClient(ctx)
-
-	volume, err := pc.CreateVolume("", map[string]string{
-		"backend": "bind",
-		"storage": mount.HostPath,
-	})
-	if err != nil && err.(*porto.PortoError).Code != pb.EError_VolumeAlreadyExists {
-		return fmt.Errorf("%s: %s %s %v", getCurrentFuncName(), id, mount.HostPath, err)
-	}
-	defer func() {
-		err := pc.UnlinkVolumeTarget(*volume.Path, "/", "")
-		if err != nil && err.(*porto.PortoError).Code != pb.EError_VolumeNotLinked {
-			zap.S().Errorf("failed to unlink volume %s from root container: %v", volume.Path, err)
-		}
-	}()
-	err = pc.LinkVolumeTarget(*volume.Path, id, mount.ContainerPath, false, mount.Readonly)
-	if err != nil {
-		return fmt.Errorf("%s: %s %s %s %v", getCurrentFuncName(), id, mount.HostPath, mount.ContainerPath, err)
-	}
 	return nil
 }
 
-func prepareContainerMounts(ctx context.Context, id string, mounts []*v1.Mount) error {
+func convertMountToVolumeSpec(id string, mount *v1.Mount) *pb.TVolumeSpec {
+	return &pb.TVolumeSpec{
+		Links: []*pb.TVolumeLink{&pb.TVolumeLink{
+			Container: &id,
+			Target:    &mount.ContainerPath,
+			ReadOnly:  &mount.Readonly,
+		}},
+		Backend: getStringPointer("bind"),
+		Storage: &mount.HostPath,
+	}
+}
+
+func prepareContainerMounts(ctx context.Context, id string, volumes *[]*pb.TVolumeSpec, mounts []*v1.Mount) {
 	// Mount logshim binary to container
 	mounts = append(mounts,
 		&v1.Mount{
@@ -400,12 +383,8 @@ func prepareContainerMounts(ctx context.Context, id string, mounts []*v1.Mount) 
 				time.Sleep(1000)
 			}
 		}
-		err := prepareContainerMount(ctx, id, mount)
-		if err != nil {
-			return err
-		}
+		*volumes = append(*volumes, convertMountToVolumeSpec(id, mount))
 	}
-	return nil
 }
 
 // labels and annotations
@@ -422,40 +401,69 @@ func convertBase64(src string, encode bool) string {
 	return string(dst)
 }
 
-func convertLabel(src string, toPorto bool, prefix string) string {
-	dst := src
-	if toPorto {
-		dst = convertBase64(dst, true)
-		if prefix != "" {
-			dst = prefix + "." + dst
-		}
-	} else {
-		if prefix != "" {
-			dst = strings.TrimPrefix(dst, prefix+".")
-		}
-		dst = convertBase64(dst, false)
+func encodeLabel(src string, prefix string) string {
+	dst := convertBase64(src, true)
+	if prefix != "" {
+		dst = prefix + "." + dst
 	}
 
 	return dst
 }
 
-func convertLabels(rawLabels string) (map[string]string, map[string]string) {
+func decodeLabel(src string, prefix string) string {
+	dst := src
+	if prefix != "" {
+		dst = strings.TrimPrefix(dst, prefix+".")
+	}
+
+	return convertBase64(dst, false)
+}
+
+func convertToStringMap(m map[string]string) *pb.TStringMap {
+	sm := []*pb.TStringMap_TStringMapEntry{}
+
+	for k, v := range m {
+		sm = append(sm, &pb.TStringMap_TStringMapEntry{
+			Key: getStringPointer(k),
+			Val: getStringPointer(v),
+		})
+	}
+
+	return &pb.TStringMap{
+		Map: sm,
+	}
+}
+
+func convertToPortoLabels(labels map[string]string, annotations map[string]string) map[string]string {
+	portoLabels := make(map[string]string)
+	for label, value := range labels {
+		portoLabels[encodeLabel(label, "LABEL")] = encodeLabel(value, "")
+	}
+
+	for annotation, value := range annotations {
+		portoLabels[encodeLabel(annotation, "ANNOTATION")] = encodeLabel(value, "")
+	}
+
+	return portoLabels
+}
+
+func convertFromPortoLabels(portoLabels string) (map[string]string, map[string]string) {
 	labels := make(map[string]string)
 	annotations := make(map[string]string)
 
-	if len(rawLabels) <= 0 {
+	if len(portoLabels) <= 0 {
 		return map[string]string{}, map[string]string{}
 	}
 
-	// porto container labels parsing
-	for _, pair := range strings.Split(rawLabels, ";") {
+	// porto labels parsing
+	for _, pair := range strings.Split(portoLabels, ";") {
 		splitedPair := strings.Split(pair, ":")
 		rawLabel := strings.TrimSpace(splitedPair[0])
 		rawValue := strings.TrimSpace(splitedPair[1])
 		if strings.HasPrefix(rawLabel, "LABEL") {
-			labels[convertLabel(rawLabel, false, "LABEL")] = convertLabel(rawValue, false, "")
+			labels[decodeLabel(rawLabel, "LABEL")] = decodeLabel(rawValue, "")
 		} else if strings.HasPrefix(rawLabel, "ANNOTATION") {
-			annotations[convertLabel(rawLabel, false, "ANNOTATION")] = convertLabel(rawValue, false, "")
+			annotations[decodeLabel(rawLabel, "ANNOTATION")] = decodeLabel(rawValue, "")
 		}
 
 	}
@@ -463,18 +471,8 @@ func convertLabels(rawLabels string) (map[string]string, map[string]string) {
 	return labels, annotations
 }
 
-func setLabels(ctx context.Context, id string, labels map[string]string, prefix string) error {
-	pc := getPortoClient(ctx)
-
-	labelsString := ""
-	for label, value := range labels {
-		labelsString += fmt.Sprintf("%s:%s;", convertLabel(label, true, prefix), convertLabel(value, true, ""))
-	}
-
-	return pc.SetProperty(id, "labels", labelsString)
-}
-
-func preparePodLabels(ctx context.Context, id string, cfg *v1.PodSandboxConfig) error {
+func preparePodLabels(podSpec *pb.TContainerSpec, cfg *v1.PodSandboxConfig) {
+	id := podSpec.GetName()
 	labels := cfg.GetLabels()
 	if labels == nil {
 		labels = make(map[string]string)
@@ -498,18 +496,11 @@ func preparePodLabels(ctx context.Context, id string, cfg *v1.PodSandboxConfig) 
 	labels["portoshim.pod.id"] = id
 	labels["portoshim.pod.image"] = Cfg.Images.PauseImage
 
-	if err := setLabels(ctx, id, labels, "LABEL"); err != nil {
-		return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-	}
-
-	if err := setLabels(ctx, id, cfg.GetAnnotations(), "ANNOTATION"); err != nil {
-		return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-	}
-
-	return nil
+	podSpec.Labels = convertToStringMap(convertToPortoLabels(labels, cfg.GetAnnotations()))
 }
 
-func prepareContainerLabels(ctx context.Context, id string, cfg *v1.ContainerConfig, image string) error {
+func prepareContainerLabels(containerSpec *pb.TContainerSpec, cfg *v1.ContainerConfig, image string) {
+	id := containerSpec.GetName()
 	labels := cfg.GetLabels()
 	if labels == nil {
 		labels = make(map[string]string)
@@ -524,18 +515,22 @@ func prepareContainerLabels(ctx context.Context, id string, cfg *v1.ContainerCon
 	labels["portoshim.container.id"] = id
 	labels["portoshim.container.image"] = image
 
-	if err := setLabels(ctx, id, labels, "LABEL"); err != nil {
-		return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-	}
-
-	if err := setLabels(ctx, id, cfg.GetAnnotations(), "ANNOTATION"); err != nil {
-		return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-	}
-
-	return nil
+	containerSpec.Labels = convertToStringMap(convertToPortoLabels(labels, cfg.GetAnnotations()))
 }
 
 // getters and converters
+func getStringPointer(v string) *string {
+	return &v
+}
+
+func getBoolPointer(v bool) *bool {
+	return &v
+}
+
+func getUintPointer(v uint64) *uint64 {
+	return &v
+}
+
 func convertValueToTime(value string) int64 {
 	return time.Unix(convertValueToInt(value), 0).UnixNano()
 }
@@ -578,20 +573,37 @@ func convertContainerMetadata(labels map[string]string) *v1.ContainerMetadata {
 	}
 }
 
-func getProperties(ctx context.Context, id string, names []string) map[string]string {
+func getProperties(ctx context.Context, id string, names []string) (map[string]string, error) {
 	pc := getPortoClient(ctx)
 
-	properties, err := pc.GetProperties([]string{id}, names)
+	rsp, err := pc.Get([]string{id}, names)
 	if err != nil {
-		WarnLog(ctx, "%s: %v", getCurrentFuncName(), err)
+		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
-	return properties[id]
+	properties := make(map[string]string)
+	for _, item := range rsp.GetList() {
+		if item.GetName() != id {
+			continue
+		}
+		for _, value := range item.GetKeyval() {
+			if value.GetError() == pb.EError_ContainerDoesNotExist {
+				return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), value.GetErrorMsg())
+			}
+			properties[value.GetVariable()] = value.GetValue()
+		}
+	}
+
+	return properties, nil
 }
 
 func getContainerImage(ctx context.Context, id string, labels map[string]string) string {
 	if image, found := labels["portoshim.container.image"]; found {
 		return image
+	}
+
+	if len(labels) <= 0 {
+		return ""
 	}
 
 	// try to get image from root volume
@@ -620,8 +632,13 @@ func getPodStats(ctx context.Context, id string) *v1.PodSandboxStats {
 		stats = append(stats, getContainerStats(ctx, ctrID))
 	}
 
-	props := getProperties(ctx, id, []string{"labels", "cpu_usage", "memory_usage", "minor_faults", "major_faults", "net_rx_bytes", "net_bytes", "process_count"})
-	labels, annotations := convertLabels(props["labels"])
+	props, err := getProperties(ctx, id, []string{"labels", "cpu_usage", "memory_usage", "minor_faults", "major_faults", "net_rx_bytes", "net_bytes", "process_count"})
+	if err != nil {
+		WarnLog(ctx, "%s: %v", getCurrentFuncName(), err)
+		return nil
+	}
+
+	labels, annotations := convertFromPortoLabels(props["labels"])
 	cpu := convertValueToUint(props["cpu_usage"])
 
 	// TODO: Заполнить оставшиеся метрики
@@ -669,8 +686,12 @@ func getPodStats(ctx context.Context, id string) *v1.PodSandboxStats {
 
 func getContainerStats(ctx context.Context, id string) *v1.ContainerStats {
 	timestamp := time.Now().UnixNano()
-	props := getProperties(ctx, id, []string{"labels", "cpu_usage", "memory_usage", "minor_faults", "major_faults"})
-	labels, annotations := convertLabels(props["labels"])
+	props, err := getProperties(ctx, id, []string{"labels", "cpu_usage", "memory_usage", "minor_faults", "major_faults"})
+	if err != nil {
+		WarnLog(ctx, "%s: %v", getCurrentFuncName(), err)
+		return nil
+	}
+	labels, annotations := convertFromPortoLabels(props["labels"])
 	cpu := convertValueToUint(props["cpu_usage"])
 
 	// TODO: Заполнить оставшиеся метрики
@@ -707,20 +728,18 @@ func getContainerStats(ctx context.Context, id string) *v1.ContainerStats {
 }
 
 // network
-func prepareContainerResolvConf(ctx context.Context, id string, cfg *v1.DNSConfig) error {
-	pc := getPortoClient(ctx)
-
-	if cfg != nil {
-		resolvConf := []string{}
-		for _, i := range cfg.GetServers() {
-			resolvConf = append(resolvConf, fmt.Sprintf("%s %s", "nameserver", i))
-		}
-		resolvConf = append(resolvConf, fmt.Sprintf("%s %s", "search", strings.Join(cfg.GetSearches(), " ")))
-		resolvConf = append(resolvConf, fmt.Sprintf("%s %s\n", "options", strings.Join(cfg.GetOptions(), " ")))
-		return pc.SetProperty(id, "resolv_conf", strings.Join(resolvConf, ";"))
+func prepareContainerResolvConf(containerSpec *pb.TContainerSpec, cfg *v1.DNSConfig) {
+	if cfg == nil {
+		return
 	}
 
-	return nil
+	resolvConf := []string{}
+	for _, i := range cfg.GetServers() {
+		resolvConf = append(resolvConf, fmt.Sprintf("%s %s", "nameserver", i))
+	}
+	resolvConf = append(resolvConf, fmt.Sprintf("%s %s", "search", strings.Join(cfg.GetSearches(), " ")))
+	resolvConf = append(resolvConf, fmt.Sprintf("%s %s\n", "options", strings.Join(cfg.GetOptions(), " ")))
+	containerSpec.ResolvConf = getStringPointer(strings.Join(resolvConf, ";"))
 }
 
 func convertContainerNetNsMode(net string) v1.NamespaceMode {
@@ -764,17 +783,10 @@ func parsePropertyNetNS(prop string) string {
 	return ""
 }
 
-func (m *PortoshimRuntimeMapper) prepareContainerNetwork(ctx context.Context, id string, cfg *v1.PodSandboxConfig) error {
-	pc := getPortoClient(ctx)
+func (m *PortoshimRuntimeMapper) preparePodNetwork(ctx context.Context, podSpec *pb.TContainerSpec, cfg *v1.PodSandboxConfig) error {
+	id := podSpec.GetName()
 
-	if cfg == nil || cfg.GetLinux() == nil || cfg.GetLinux().GetSecurityContext() == nil ||
-		cfg.GetLinux().GetSecurityContext().GetNamespaceOptions() == nil {
-		WarnLog(ctx, "cannot get network namespace options")
-		return nil
-	}
-
-	nsOpts := cfg.GetLinux().GetSecurityContext().GetNamespaceOptions()
-	if nsOpts.Network == v1.NamespaceMode_NODE {
+	if nsOpts := cfg.GetLinux().GetSecurityContext().GetNamespaceOptions(); nsOpts == nil || nsOpts.GetNetwork() == v1.NamespaceMode_NODE {
 		return nil
 	}
 
@@ -793,49 +805,54 @@ func (m *PortoshimRuntimeMapper) prepareContainerNetwork(ctx context.Context, id
 	if err != nil {
 		return err
 	}
-	addrs := []string{}
+
+	// hostname
+	podSpec.Hostname = getStringPointer(cfg.GetHostname())
+
+	// net
+	podSpec.Net = &pb.TContainerNetConfig{
+		Cfg: []*pb.TContainerNetOption{
+			&pb.TContainerNetOption{
+				Opt: getStringPointer("netns"),
+				Arg: []string{filepath.Base(netnsPath.GetPath())},
+			},
+		},
+	}
+
+	// ip
+	addrs := []*pb.TContainerIpConfig_TContainerIp{}
 	for _, ip := range result.Interfaces[defaultIfName].IPConfigs {
 		ipv6 := ip.IP.To16()
 		if ipv6 != nil {
-			addrs = append(addrs, fmt.Sprintf("%s %s", defaultIfName, ipv6))
+			addrs = append(addrs, &pb.TContainerIpConfig_TContainerIp{
+				Dev: getStringPointer(defaultIfName),
+				Ip:  getStringPointer(ipv6.String()),
+			})
 		}
 	}
-
-	// hostname
-	if err = pc.SetProperty(id, "hostname", cfg.GetHostname()); err != nil {
-		return fmt.Errorf("failed set porto prop hostname, pod %s: %w", id, err)
-	}
-
-	// net
-	err = pc.SetProperty(id, "net", fmt.Sprintf("netns %s", filepath.Base(netnsPath.GetPath())))
-	if err != nil {
-		return fmt.Errorf("failed set porto prop net, pod %s: %w", id, err)
-	}
-	err = pc.SetProperty(id, "ip", strings.Join(addrs, ";"))
-	if err != nil {
-		return fmt.Errorf("failed set porto prop ip, pod %s: %w", id, err)
+	podSpec.Ip = &pb.TContainerIpConfig{
+		Cfg: addrs,
 	}
 
 	// sysctl
-	sysctls := []string{}
-	for k, v := range cfg.GetLinux().GetSysctls() {
-		sysctls = append(sysctls, fmt.Sprintf("%s:%s", k, v))
-	}
-	err = pc.SetProperty(id, "sysctl", strings.Join(sysctls, ";"))
-	if err != nil {
-		return fmt.Errorf("failed set porto prop sysctl, pod %s: %w", id, err)
-	}
+	podSpec.Sysctl = convertToStringMap(cfg.GetLinux().GetSysctls())
 
+	// tx and rx limits
 	for k, v := range cfg.GetAnnotations() {
-		if k == filepath.Join(kubeResourceDomain, "net-tx") {
-			err = pc.SetProperty(id, "net_limit", fmt.Sprintf("%s: %s", ifPrefixName, v))
-			if err != nil {
-				return fmt.Errorf("failed set porto prop net_limit, pod %s: %w", id, err)
+		if strings.HasPrefix(k, "net-") {
+			limit, _ := strconv.ParseUint(v, 0, 64)
+			m := &pb.TUintMap{
+				Map: []*pb.TUintMap_TUintMapEntry{
+					&pb.TUintMap_TUintMapEntry{
+						Key: getStringPointer(ifPrefixName),
+						Val: getUintPointer(limit),
+					},
+				},
 			}
-		} else if k == filepath.Join(kubeResourceDomain, "net-rx") {
-			err = pc.SetProperty(id, "net_rx_limit", fmt.Sprintf("%s: %s", ifPrefixName, v))
-			if err != nil {
-				return fmt.Errorf("failed set porto prop net_rx_limit, pod %s: %w", id, err)
+			if k == filepath.Join(kubeResourceDomain, "net-tx") {
+				podSpec.NetLimit = m
+			} else if k == filepath.Join(kubeResourceDomain, "net-rx") {
+				podSpec.NetRxLimit = m
 			}
 		}
 	}
@@ -862,69 +879,76 @@ func (m *PortoshimRuntimeMapper) Version(ctx context.Context, req *v1.VersionReq
 }
 
 func (m *PortoshimRuntimeMapper) RunPodSandbox(ctx context.Context, req *v1.RunPodSandboxRequest) (*v1.RunPodSandboxResponse, error) {
+	id := createID(req.GetConfig().GetMetadata().GetName())
 	pc := getPortoClient(ctx)
 
-	id := createID(req.GetConfig().GetMetadata().GetName())
-	err := pc.Create(id)
+	// get image
+	DebugLog(ctx, "check image: %s", Cfg.Images.PauseImage)
+	image, err := pc.DockerImageStatus(Cfg.Images.PauseImage, "")
 	if err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
-	// get image
-	image, err := pc.DockerImageStatus(Cfg.Images.PauseImage, "")
-	if err != nil {
-		_ = pc.Destroy(id)
-		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+	// specs initialization for CreateFromSpec
+	podSpec := &pb.TContainerSpec{
+		Name: &id,
 	}
+	volumes := &[]*pb.TVolumeSpec{}
 
 	// resources
 	if res := req.GetConfig().GetLinux().GetResources(); res != nil {
-		if err = prepareContainerResources(ctx, id, res); err != nil {
-			_ = pc.Destroy(id)
-			return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-		}
+		DebugLog(ctx, "prepare resources: %+v", res)
+		prepareResources(podSpec, res)
 	}
 
 	// labels and annotations
-	if err = preparePodLabels(ctx, id, req.GetConfig()); err != nil {
-		_ = pc.Destroy(id)
+	DebugLog(ctx,
+		"prepare labels and annotations: labels=%+v annotations=%+v",
+		req.GetConfig().GetLabels(),
+		req.GetConfig().GetAnnotations(),
+	)
+	preparePodLabels(podSpec, req.GetConfig())
+
+	// root
+	DebugLog(ctx, "prepare pod root: %s %s", id, Cfg.Images.PauseImage)
+	if err := prepareRoot(ctx, podSpec, volumes, "", Cfg.Images.PauseImage); err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
-	// root
-	rootPath, err := prepareContainerRoot(ctx, id, "", Cfg.Images.PauseImage)
-	if err != nil {
-		_ = pc.Destroy(id)
+	// create pod and rootfs
+	DebugLog(ctx, "create pod from spec: %+v", id)
+	if err = pc.CreateFromSpec(podSpec, *volumes, false); err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+	}
+
+	// spec reinitialization for UpdateFromSpec
+	podSpec = &pb.TContainerSpec{
+		Name: &id,
 	}
 
 	// Container prepare order is mandatory!
 	// env and command MUST be prepared ONLY AFTER container chroot ready
-	env, err := prepareContainerEnv(ctx, id, []*v1.KeyValue{}, image)
-	if err != nil {
-		_ = pc.Destroy(id)
-		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-	}
+	DebugLog(ctx, "prepare pod environment variables: %+v", image.GetConfig().GetEnv())
+	prepareEnv(ctx, podSpec, []*v1.KeyValue{}, image)
 
 	// command + args
-	if err = prepareContainerCommand(ctx, id, []string{}, []string{}, image.GetConfig().GetCmd(), env, false); err != nil {
+	DebugLog(ctx, "prepare pod command: cmd=%+v", image.GetConfig().GetCmd())
+	if err = prepareCommand(ctx, podSpec, []string{}, []string{}, image.GetConfig().GetCmd(), false); err != nil {
 		_ = pc.Destroy(id)
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
 	// network
-	cfg := req.GetConfig()
-	if cfg != nil && cfg.GetLinux() != nil {
-		if err = m.prepareContainerNetwork(ctx, id, cfg); err != nil {
-			_ = pc.Destroy(id)
-			_ = os.RemoveAll(rootPath)
-			return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-		}
+	DebugLog(ctx, "prepare pod network: %+v", req.GetConfig())
+	if err = m.preparePodNetwork(ctx, podSpec, req.GetConfig()); err != nil {
+		_ = pc.Destroy(id)
+		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
-	// pod starting
-	err = pc.Start(id)
-	if err != nil {
+	// set network, command and environment variables
+	DebugLog(ctx, "update and start pod from spec: %+v", id)
+	if err = pc.UpdateFromSpec(podSpec, true); err != nil {
+		_ = pc.Destroy(id)
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
@@ -941,13 +965,14 @@ func (m *PortoshimRuntimeMapper) StopPodSandbox(ctx context.Context, req *v1.Sto
 		return nil, fmt.Errorf("%s: %s specified ID belongs to container", getCurrentFuncName(), id)
 	}
 
+	// pod existing
 	state, err := pc.GetProperty(id, "state")
 	if err != nil {
-		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+		WarnLog(ctx, "%s: %v", getCurrentFuncName(), err)
 	}
+
 	if state == "running" {
-		err := pc.Kill(id, 15)
-		if err != nil {
+		if err = pc.Kill(id, 15); err != nil {
 			return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 		}
 	}
@@ -959,17 +984,21 @@ func (m *PortoshimRuntimeMapper) RemovePodSandbox(ctx context.Context, req *v1.R
 	pc := getPortoClient(ctx)
 
 	id := req.GetPodSandboxId()
+	if !isPod(id) {
+		return nil, fmt.Errorf("%s: %s specified ID belongs to container", getCurrentFuncName(), id)
+	}
+
 	netProp, err := pc.GetProperty(id, "net")
 	if err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
-	if err = pc.Destroy(id); err != nil {
+	if err := pc.Destroy(id); err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
 	rootPath := filepath.Join(Cfg.Portoshim.VolumesDir, id)
-	if err = os.RemoveAll(rootPath); err != nil {
+	if err := os.RemoveAll(rootPath); err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
@@ -977,13 +1006,14 @@ func (m *PortoshimRuntimeMapper) RemovePodSandbox(ctx context.Context, req *v1.R
 	netnsProp := parsePropertyNetNS(netProp)
 	if netnsProp != "" {
 		netnsPath := netns.LoadNetNS(filepath.Join(Cfg.CNI.NetnsDir, netnsProp))
-		if err = m.netPlugin.Remove(ctx, id, netnsPath.GetPath(), cni.WithLabels(map[string]string{})); err != nil {
+		if err := m.netPlugin.Remove(ctx, id, netnsPath.GetPath(), cni.WithLabels(map[string]string{})); err != nil {
 			return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 		}
-		if err = netnsPath.Remove(); err != nil {
+		if err := netnsPath.Remove(); err != nil {
 			return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 		}
 	}
+
 	return &v1.RemovePodSandboxResponse{}, nil
 }
 
@@ -993,8 +1023,11 @@ func (m *PortoshimRuntimeMapper) PodSandboxStatus(ctx context.Context, req *v1.P
 		return nil, fmt.Errorf("%s: %s specified ID belongs to container", getCurrentFuncName(), id)
 	}
 
-	props := getProperties(ctx, id, []string{"labels", "state", "creation_time[raw]", "ip", "net"})
-	labels, annotations := convertLabels(props["labels"])
+	props, err := getProperties(ctx, id, []string{"labels", "state", "creation_time[raw]", "ip", "net"})
+	if err != nil {
+		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+	}
+	labels, annotations := convertFromPortoLabels(props["labels"])
 
 	resp := &v1.PodSandboxStatusResponse{
 		Status: &v1.PodSandboxStatus{
@@ -1047,8 +1080,12 @@ func (m *PortoshimRuntimeMapper) ListPodSandbox(ctx context.Context, req *v1.Lis
 
 	var items []*v1.PodSandbox
 	for _, id := range response {
-		props := getProperties(ctx, id, []string{"labels", "state", "creation_time[raw]"})
-		labels, annotations := convertLabels(props["labels"])
+		props, err := getProperties(ctx, id, []string{"labels", "state", "creation_time[raw]"})
+		if err != nil {
+			WarnLog(ctx, "%s: %v", getCurrentFuncName(), err)
+			continue
+		}
+		labels, annotations := convertFromPortoLabels(props["labels"])
 
 		// skip not k8s
 		if _, found := labels["portoshim.pod.id"]; !found {
@@ -1092,69 +1129,85 @@ func (m *PortoshimRuntimeMapper) ListPodSandbox(ctx context.Context, req *v1.Lis
 }
 
 func (m *PortoshimRuntimeMapper) CreateContainer(ctx context.Context, req *v1.CreateContainerRequest) (*v1.CreateContainerResponse, error) {
-	pc := getPortoClient(ctx)
-
 	// <id> := <podID>/<containerID>
 	podID := req.GetPodSandboxId()
 	containerID := createID(req.GetConfig().GetMetadata().GetName())
 	id := filepath.Join(podID, containerID)
-	err := pc.Create(id)
+	imageName := req.GetConfig().GetImage().GetImage()
+	pc := getPortoClient(ctx)
+
+	// get image
+	DebugLog(ctx, "check image: %s", imageName)
+	image, err := pc.DockerImageStatus(imageName, "")
 	if err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
-	// get image
-	imageName := req.GetConfig().GetImage().GetImage()
-	image, err := pc.DockerImageStatus(imageName, "")
-	if err != nil {
-		_ = pc.Destroy(id)
-		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+	// specs initialization for CreateFromSpec
+	containerSpec := &pb.TContainerSpec{
+		Name: &id,
 	}
+	volumes := &[]*pb.TVolumeSpec{}
 
 	// resources
 	if res := req.GetConfig().GetLinux().GetResources(); res != nil {
-		if err = prepareContainerResources(ctx, id, res); err != nil {
-			_ = pc.Destroy(id)
-			return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-		}
+		DebugLog(ctx, "prepare resources: %+v", res)
+		prepareResources(containerSpec, res)
 	}
 
 	// labels and annotations
-	if err = prepareContainerLabels(ctx, id, req.GetConfig(), *image.Id); err != nil {
-		_ = pc.Destroy(id)
-		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-	}
+	DebugLog(ctx,
+		"prepare labels and annotations: labels=%+v annotations=%+v",
+		req.GetConfig().GetLabels(),
+		req.GetConfig().GetAnnotations(),
+	)
+	prepareContainerLabels(containerSpec, req.GetConfig(), *image.Id)
 
 	// resolv.conf
-	if err = prepareContainerResolvConf(ctx, id, req.GetSandboxConfig().GetDnsConfig()); err != nil {
-		_ = pc.Destroy(id)
-		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-	}
+	DebugLog(ctx, "prepare resolv.conf: %+v", req.GetSandboxConfig().GetDnsConfig())
+	prepareContainerResolvConf(containerSpec, req.GetSandboxConfig().GetDnsConfig())
 
 	// root
-	rootPath, err := prepareContainerRoot(ctx, id, "/"+containerID, imageName)
-	if err != nil {
-		_ = pc.Destroy(id)
+	DebugLog(ctx, "prepare container root: %s %s", id, imageName)
+	if err = prepareRoot(ctx, containerSpec, volumes, "/"+containerID, imageName); err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
 	// mounts
-	if err = prepareContainerMounts(ctx, id, req.GetConfig().GetMounts()); err != nil {
-		_ = pc.Destroy(id)
-		_ = os.RemoveAll(rootPath)
+	DebugLog(ctx, "prepare container mounts: %+v", req.GetConfig().GetMounts())
+	prepareContainerMounts(ctx, id, volumes, req.GetConfig().GetMounts())
+
+	// create container and roootfs
+	DebugLog(ctx, "create container from spec: %+v", id)
+	if err = pc.CreateFromSpec(containerSpec, *volumes, false); err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+	}
+
+	// spec reinitialization for UpdateFromSpec
+	containerSpec = &pb.TContainerSpec{
+		Name: &id,
 	}
 
 	// Container prepare order is mandatory!
 	// env and command MUST be prepared ONLY AFTER container chroot ready
-	env, err := prepareContainerEnv(ctx, id, req.GetConfig().GetEnvs(), image)
-	if err != nil {
+	DebugLog(ctx, "prepare container environment variables: %+v and %+v", req.GetConfig().GetEnvs(), image.GetConfig().GetEnv())
+	prepareEnv(ctx, containerSpec, req.GetConfig().GetEnvs(), image)
+
+	// command + args
+	DebugLog(ctx,
+		"prepare container command: cmd=%+v args=%+v icmd=%+v",
+		req.GetConfig().GetCommand(),
+		req.GetConfig().GetArgs(),
+		image.GetConfig().GetCmd(),
+	)
+	if err = prepareCommand(ctx, containerSpec, req.GetConfig().GetCommand(), req.GetConfig().GetArgs(), image.GetConfig().GetCmd(), false); err != nil {
 		_ = pc.Destroy(id)
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
-	// command + args
-	if err = prepareContainerCommand(ctx, id, req.GetConfig().GetCommand(), req.GetConfig().GetArgs(), image.GetConfig().GetCmd(), env, false); err != nil {
+	// set command and environment variables
+	DebugLog(ctx, "update container from spec: %+v", id)
+	if err = pc.UpdateFromSpec(containerSpec, false); err != nil {
 		_ = pc.Destroy(id)
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
@@ -1172,8 +1225,7 @@ func (m *PortoshimRuntimeMapper) StartContainer(ctx context.Context, req *v1.Sta
 		return nil, fmt.Errorf("%s: %s specified ID belongs to pod", getCurrentFuncName(), id)
 	}
 
-	err := pc.Start(id)
-	if err != nil {
+	if err := pc.Start(id); err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
@@ -1188,13 +1240,14 @@ func (m *PortoshimRuntimeMapper) StopContainer(ctx context.Context, req *v1.Stop
 		return nil, fmt.Errorf("%s: %s specified ID belongs to pod", getCurrentFuncName(), id)
 	}
 
+	// container existing
 	state, err := pc.GetProperty(id, "state")
 	if err != nil {
-		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+		WarnLog(ctx, "%s: %v", getCurrentFuncName(), err)
 	}
+
 	if state == "running" {
-		err := pc.Kill(id, 15)
-		if err != nil {
+		if err = pc.Kill(id, 15); err != nil {
 			return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 		}
 	}
@@ -1210,14 +1263,12 @@ func (m *PortoshimRuntimeMapper) RemoveContainer(ctx context.Context, req *v1.Re
 		return nil, fmt.Errorf("%s: %s specified ID belongs to pod", getCurrentFuncName(), id)
 	}
 
-	err := pc.Destroy(id)
-	if err != nil {
+	if err := pc.Destroy(id); err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
 	rootPath := filepath.Join(Cfg.Portoshim.VolumesDir, id)
-	err = os.RemoveAll(rootPath)
-	if err != nil {
+	if err := os.RemoveAll(rootPath); err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
@@ -1251,8 +1302,12 @@ func (m *PortoshimRuntimeMapper) ListContainers(ctx context.Context, req *v1.Lis
 			continue
 		}
 
-		props := getProperties(ctx, id, []string{"labels", "state", "creation_time[raw]"})
-		labels, annotations := convertLabels(props["labels"])
+		props, err := getProperties(ctx, id, []string{"labels", "state", "creation_time[raw]"})
+		if err != nil {
+			WarnLog(ctx, "%s: %v", getCurrentFuncName(), err)
+			continue
+		}
+		labels, annotations := convertFromPortoLabels(props["labels"])
 
 		// skip not k8s
 		if _, found := labels["portoshim.container.id"]; !found {
@@ -1309,8 +1364,11 @@ func (m *PortoshimRuntimeMapper) ContainerStatus(ctx context.Context, req *v1.Co
 		return nil, fmt.Errorf("%s: specified ID belongs to pod", getCurrentFuncName())
 	}
 
-	props := getProperties(ctx, id, []string{"labels", "state", "creation_time[raw]", "start_time[raw]", "death_time[raw]", "exit_code"})
-	labels, annotations := convertLabels(props["labels"])
+	props, err := getProperties(ctx, id, []string{"labels", "state", "creation_time[raw]", "start_time[raw]", "death_time[raw]", "exit_code"})
+	if err != nil {
+		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+	}
+	labels, annotations := convertFromPortoLabels(props["labels"])
 	image := getContainerImage(ctx, id, labels)
 
 	resp := &v1.ContainerStatusResponse{
@@ -1346,45 +1404,44 @@ func (m *PortoshimRuntimeMapper) ReopenContainerLog(ctx context.Context, req *v1
 
 func (m *PortoshimRuntimeMapper) ExecSync(ctx context.Context, req *v1.ExecSyncRequest) (*v1.ExecSyncResponse, error) {
 	pc := getPortoClient(ctx)
-	execContainerID := filepath.Join(req.GetContainerId(), createID("exec-sync"))
-	if err := pc.Create(execContainerID); err != nil {
-		return nil, fmt.Errorf("failed to create exec container %s: %w", execContainerID, err)
-	}
-	defer pc.Destroy(execContainerID)
+	containerID := req.GetContainerId()
+	id := filepath.Join(containerID, createID("exec-sync"))
 
-	env, err := pc.GetProperty(req.GetContainerId(), "env")
+	// spec initialization for CreateFromSpec
+	containerSpec := &pb.TContainerSpec{
+		Name: &id,
+		Weak: getBoolPointer(true),
+	}
+
+	// environment variables
+	env, err := pc.GetProperty(containerID, "env")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get parent container %s env prop: %w", req.GetContainerId(), err)
 	}
-	if err := pc.SetProperty(execContainerID, "env", env); err != nil {
-		return nil, fmt.Errorf("failed to set env for exec container %s: %w", execContainerID, err)
+	prepareExecEnv(ctx, containerSpec, env)
+
+	// command
+	if err := prepareCommand(ctx, containerSpec, req.GetCmd(), nil, nil, true); err != nil {
+		return nil, fmt.Errorf("failed to prepare command '%v' for exec container %s: %w", req.Cmd, id, err)
 	}
 
-	var envSlice []string
-	if strings.Contains(env, "\\;") {
-		// These actions for case when env has separator ";" in value of variable (e.g. "NAME1=value1;NAME2=some\;value2")
-		specChar := string(rune(0x10FFFF))
-		envSlice = strings.Split(strings.ReplaceAll(env, "\\;", specChar), ";")
-		for i, s := range envSlice {
-			envSlice[i] = strings.ReplaceAll(s, specChar, ";")
-		}
-	} else {
-		envSlice = strings.Split(env, ";")
+	// create and start container
+	if err = pc.CreateFromSpec(containerSpec, []*pb.TVolumeSpec{}, true); err != nil {
+		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
-	if err := prepareContainerCommand(ctx, execContainerID, req.GetCmd(), nil, nil, envToVars(ctx, envSlice), true); err != nil {
-		return nil, fmt.Errorf("failed to prepare command '%v' for exec container %s: %w", req.Cmd, execContainerID, err)
+	defer pc.Destroy(id)
+
+	timeout := Cfg.Porto.SocketTimeout
+	if req.GetTimeout() > 0 {
+		timeout = time.Duration(req.GetTimeout()) * time.Second
+	}
+	if _, err := pc.Wait([]string{id}, timeout); err != nil {
+		return nil, fmt.Errorf("failed to wait exec container %s exit: %w", id, err)
 	}
 
-	if err := pc.Start(execContainerID); err != nil {
-		return nil, fmt.Errorf("failed to start exec container %s command '%s': %w", execContainerID, strings.Join(req.Cmd, " "), err)
-	}
-	if _, err := pc.Wait([]string{execContainerID}, time.Duration(req.Timeout)*time.Second); err != nil {
-		return nil, fmt.Errorf("failed to wait exec container %s exit: %w", execContainerID, err)
-	}
-
-	exitCode, err := pc.GetProperty(execContainerID, "exit_code")
+	exitCode, err := pc.GetProperty(id, "exit_code")
 	if err != nil {
-		return nil, fmt.Errorf("failed to get container %s exit_code: %w", execContainerID, err)
+		return nil, fmt.Errorf("failed to get container %s exit_code: %w", id, err)
 	}
 	code, err := strconv.ParseInt(exitCode, 10, 32)
 	if err != nil {
@@ -1392,19 +1449,9 @@ func (m *PortoshimRuntimeMapper) ExecSync(ctx context.Context, req *v1.ExecSyncR
 	}
 
 	// TODO: maybe read whole stdout/stderr file not just tail from porto?
-	props, err := pc.Get([]string{execContainerID}, []string{"stdout", "stderr"})
+	streams, err := getProperties(ctx, id, []string{"stdout", "stderr"})
 	if err != nil {
-		return nil, fmt.Errorf("failed to get container %s stdout and stderr: %w", execContainerID, err)
-	}
-
-	streams := make(map[string]string)
-	for _, item := range props.GetList() {
-		for _, value := range item.GetKeyval() {
-			if item.GetName() != execContainerID {
-				continue
-			}
-			streams[value.GetVariable()] = value.GetValue()
-		}
+		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
 	rsp := &v1.ExecSyncResponse{
@@ -1471,8 +1518,12 @@ func (m *PortoshimRuntimeMapper) ListContainerStats(ctx context.Context, req *v1
 			continue
 		}
 
-		props := getProperties(ctx, id, []string{"labels", "state"})
-		labels, _ := convertLabels(props["labels"])
+		props, err := getProperties(ctx, id, []string{"labels", "state"})
+		if err != nil {
+			WarnLog(ctx, "%s: %v", getCurrentFuncName(), err)
+			continue
+		}
+		labels, _ := convertFromPortoLabels(props["labels"])
 
 		// skip not k8s
 		if _, found := labels["portoshim.container.id"]; !found {
@@ -1520,8 +1571,12 @@ func (m *PortoshimRuntimeMapper) ListPodSandboxStats(ctx context.Context, req *v
 
 	var stats []*v1.PodSandboxStats
 	for _, id := range response {
-		props := getProperties(ctx, id, []string{"labels", "state"})
-		labels, _ := convertLabels(props["labels"])
+		props, err := getProperties(ctx, id, []string{"labels", "state"})
+		if err != nil {
+			WarnLog(ctx, "%s: %v", getCurrentFuncName(), err)
+			continue
+		}
+		labels, _ := convertFromPortoLabels(props["labels"])
 
 		// skip not k8s
 		if _, found := labels["portoshim.pod.id"]; !found {

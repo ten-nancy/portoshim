@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	term "github.com/creack/pty"
+	pb "github.com/ten-nancy/porto/src/api/go/porto/pkg/rpc"
 	"go.uber.org/zap"
 	"golang.org/x/net/context"
 	remotecommandconsts "k8s.io/apimachinery/pkg/util/remotecommand"
@@ -38,21 +40,27 @@ func (sr StreamingRuntime) Exec(_ context.Context, containerID string, cmd []str
 	}
 
 	pc := getPortoClient(ctx)
+	id := filepath.Join(containerID, createID("exec"))
 
-	id := containerID + createID("/exec")
+	// spec initialization for CreateFromSpec
+	containerSpec := &pb.TContainerSpec{
+		Name: &id,
+		Weak: getBoolPointer(true),
+	}
 
-	if err := pc.CreateWeak(id); err != nil {
+	// environment variables
+	env, err := pc.GetProperty(containerID, "env")
+	if err != nil {
+		return fmt.Errorf("failed to get parent container %s env prop: %w", containerID, err)
+	}
+	prepareExecEnv(ctx, containerSpec, env)
+
+	// command
+	if err := prepareCommand(ctx, containerSpec, cmd, nil, nil, true); err != nil {
 		return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
-	if err := prepareContainerCommand(ctx, id, cmd, nil, nil, nil, true); err != nil {
-		return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-	}
-	if err := pc.SetProperty(id, "isolate", "false"); err != nil {
-		return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-	}
-	if err := pc.SetProperty(id, "net", "inherited"); err != nil {
-		return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-	}
+
+	containerSpec.Isolate = getBoolPointer(false)
 
 	var (
 		stdinR, stdinW   *os.File
@@ -83,9 +91,7 @@ func (sr StreamingRuntime) Exec(_ context.Context, containerID string, cmd []str
 			defer stdinW.Close()
 		}
 
-		if err := pc.SetProperty(id, "stdin_path", fmt.Sprintf("/dev/fd/%d", stdinR.Fd())); err != nil {
-			return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-		}
+		containerSpec.StdinPath = getStringPointer(fmt.Sprintf("/dev/fd/%d", stdinR.Fd()))
 	}
 
 	if stdout != nil {
@@ -101,9 +107,7 @@ func (sr StreamingRuntime) Exec(_ context.Context, containerID string, cmd []str
 			defer stdoutW.Close()
 		}
 
-		if err := pc.SetProperty(id, "stdout_path", fmt.Sprintf("/dev/fd/%d", stdoutW.Fd())); err != nil {
-			return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-		}
+		containerSpec.StdoutPath = getStringPointer(fmt.Sprintf("/dev/fd/%d", stdoutW.Fd()))
 	}
 
 	if terminal {
@@ -119,14 +123,14 @@ func (sr StreamingRuntime) Exec(_ context.Context, containerID string, cmd []str
 	}
 
 	if stderrW != nil {
-		if err := pc.SetProperty(id, "stderr_path", fmt.Sprintf("/dev/fd/%d", stderrW.Fd())); err != nil {
-			return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-		}
+		containerSpec.StderrPath = getStringPointer(fmt.Sprintf("/dev/fd/%d", stderrW.Fd()))
 	}
 
-	if err := pc.Start(id); err != nil {
+	// create and start container
+	if err = pc.CreateFromSpec(containerSpec, []*pb.TVolumeSpec{}, true); err != nil {
 		return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
+	defer pc.Destroy(id)
 
 	if !terminal {
 		if stdin != nil {
