@@ -247,8 +247,7 @@ func prepareCommand(ctx context.Context, spec *pb.TContainerSpec, cfgCmd, cfgArg
 	}
 	// Try to find out binary path inside chroot if we have non-absolute command
 	if cmd[0][0] != '/' {
-		rootPath := spec.GetRoot()
-		execPath := findChrootExecutable(ctx, findEnvPathOrDefault(env), rootPath, cmd[0])
+		execPath := findChrootExecutable(ctx, findEnvPathOrDefault(env), getRootPath(id), cmd[0])
 		if execPath != "" {
 			cmd[0] = execPath
 		} else {
@@ -311,9 +310,13 @@ func sliceContainsString(s []string, str string) bool {
 	return false
 }
 
+func getRootPath(id string) string {
+	return filepath.Join(Cfg.Portoshim.VolumesDir, id)
+}
+
 func prepareRoot(ctx context.Context, spec *pb.TContainerSpec, volumes *[]*pb.TVolumeSpec, rootPath string, image string) error {
 	id := spec.GetName()
-	rootAbsPath := filepath.Join(Cfg.Portoshim.VolumesDir, id)
+	rootAbsPath := getRootPath(id)
 	if rootPath == "" {
 		rootPath = rootAbsPath
 	}
@@ -608,7 +611,7 @@ func getContainerImage(ctx context.Context, id string, labels map[string]string)
 
 	// try to get image from root volume
 	pc := getPortoClient(ctx)
-	imageDescriptions, err := pc.ListVolumes(filepath.Join(Cfg.Portoshim.VolumesDir, id), id)
+	imageDescriptions, err := pc.ListVolumes(getRootPath(id), id)
 	if err != nil {
 		WarnLog(ctx, "%s: %v", getCurrentFuncName(), err)
 		return ""
@@ -719,7 +722,7 @@ func getContainerStats(ctx context.Context, id string) *v1.ContainerStats {
 		WritableLayer: &v1.FilesystemUsage{
 			Timestamp: timestamp,
 			FsId: &v1.FilesystemIdentifier{
-				Mountpoint: filepath.Join(Cfg.Portoshim.VolumesDir, id),
+				Mountpoint: getRootPath(id),
 			},
 			UsedBytes:  &v1.UInt64Value{Value: 0},
 			InodesUsed: &v1.UInt64Value{Value: 0},
@@ -997,7 +1000,7 @@ func (m *PortoshimRuntimeMapper) RemovePodSandbox(ctx context.Context, req *v1.R
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
-	rootPath := filepath.Join(Cfg.Portoshim.VolumesDir, id)
+	rootPath := getRootPath(id)
 	if err := os.RemoveAll(rootPath); err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
@@ -1267,7 +1270,7 @@ func (m *PortoshimRuntimeMapper) RemoveContainer(ctx context.Context, req *v1.Re
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
-	rootPath := filepath.Join(Cfg.Portoshim.VolumesDir, id)
+	rootPath := getRootPath(id)
 	if err := os.RemoveAll(rootPath); err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
