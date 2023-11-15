@@ -1,3 +1,10 @@
+portoshim (1.0.9) stable; urgency=low
+  [ kndrvt ]
+      runtime_mapper: add getRootPath and fix bug in prepareCommand
+  last commit: e3e73732573aa99f3650464e5966711918167c4b
+
+ -- Lev Pantyukhin <kndrvt@yandex-team.ru>  Wed, 15 Nov 2023 12:14:00 -0000
+
 portoshim (1.0.8) stable; urgency=low
   [ kndrvt ]
       portoshim: minimize count of set requests to Porto
