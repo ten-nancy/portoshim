@@ -67,18 +67,18 @@ func NewPortoshimRuntimeMapper() (*PortoshimRuntimeMapper, error) {
 		cni.WithPluginDir([]string{Cfg.CNI.BinDir}),
 		cni.WithInterfacePrefix(ifPrefixName))
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize cni: %w", err)
+		return nil, fmt.Errorf("failed to initialize cni: %v", err)
 	}
 	if err = netPlugin.Load(cni.WithLoNetwork, cni.WithDefaultConf); err != nil {
-		zap.S().Warnf("failed to load cni configuration: %v", err)
-	} else {
-		rm.netPlugin = netPlugin
+		return nil, fmt.Errorf("failed to load cni configuration: %v", err)
 	}
+	rm.netPlugin = netPlugin
 
 	rm.streamingServer, err = NewStreamingServer(fmt.Sprintf("%s:%d", Cfg.StreamingServer.Address, Cfg.StreamingServer.Port))
 	if err != nil {
-		zap.S().Warnf("failed to create streaming server: %v", err)
+		return nil, fmt.Errorf("failed to create streaming server: %v", err)
 	}
+
 	go func() {
 		err = rm.streamingServer.Start(true)
 		if err != nil {
