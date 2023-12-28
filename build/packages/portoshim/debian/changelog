@@ -1,3 +1,10 @@
+portoshim (1.0.10) stable; urgency=low
+  [ kndrvt ]
+      runtime_mapper: fail start in event of error in NewPortoshimRuntimeMapper
+  last commit: 50fa250b74bd1931a601a21d58cae952c56bafc4
+
+ -- Lev Pantyukhin <kndrvt@yandex-team.ru>  Thu, 28 Dec 2023 12:07:04 -0000
+
 portoshim (1.0.9) stable; urgency=low
   [ kndrvt ]
       runtime_mapper: add getRootPath and fix bug in prepareCommand
