@@ -786,6 +786,16 @@ func parsePropertyNetNS(prop string) string {
 	return ""
 }
 
+func convertToCNILabels(id string, config *v1.PodSandboxConfig) map[string]string {
+	return map[string]string{
+		"K8S_POD_NAMESPACE":          config.GetMetadata().GetNamespace(),
+		"K8S_POD_NAME":               config.GetMetadata().GetName(),
+		"K8S_POD_INFRA_CONTAINER_ID": id,
+		"K8S_POD_UID":                config.GetMetadata().GetUid(),
+		"IgnoreUnknown":              "1",
+	}
+}
+
 func (m *PortoshimRuntimeMapper) preparePodNetwork(ctx context.Context, podSpec *pb.TContainerSpec, cfg *v1.PodSandboxConfig) error {
 	id := podSpec.GetName()
 
@@ -803,7 +813,7 @@ func (m *PortoshimRuntimeMapper) preparePodNetwork(ctx context.Context, podSpec 
 	}
 	cniNSOpts := []cni.NamespaceOpts{
 		cni.WithCapability("io.kubernetes.cri.pod-annotations", cfg.Annotations),
-		cni.WithLabels(toCNILabels(id, cfg)),
+		cni.WithLabels(convertToCNILabels(id, cfg)),
 	}
 	result, err := m.netPlugin.Setup(ctx, id, netnsPath.GetPath(), cniNSOpts...)
 	if err != nil {
@@ -862,16 +872,6 @@ func (m *PortoshimRuntimeMapper) preparePodNetwork(ctx context.Context, podSpec 
 	}
 
 	return nil
-}
-
-func toCNILabels(id string, config *v1.PodSandboxConfig) map[string]string {
-	return map[string]string{
-		"K8S_POD_NAMESPACE":          config.GetMetadata().GetNamespace(),
-		"K8S_POD_NAME":               config.GetMetadata().GetName(),
-		"K8S_POD_INFRA_CONTAINER_ID": id,
-		"K8S_POD_UID":                config.GetMetadata().GetUid(),
-		"IgnoreUnknown":              "1",
-	}
 }
 
 // RUNTIME SERVICE INTERFACE
