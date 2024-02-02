@@ -6,7 +6,7 @@ ConditionVirtualization=!container
 Documentation=https://github.com/ten-nancy/portoshim
 
 [Service]
-ExecStart=/usr/sbin/portoshim -debug
+ExecStart=/usr/sbin/portoshim
 Restart=on-failure
 KillSignal=SIGTERM
 KillMode=process
