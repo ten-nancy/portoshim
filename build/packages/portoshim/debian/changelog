@@ -1,3 +1,14 @@
+portoshim (1.0.11) stable; urgency=low
+  [ mikesenin ]
+      portoshim: remove debug flag from portoshim.service
+  [ kndrvt ]
+      portoshim: refactor README.md
+  [ robot-piglet ]
+      runtime_mapper: add kubernetes labels to pod network
+  last commit: 6e56d631c99060a7a1449e6eb90b5949034062d5
+
+ -- Lev Pantyukhin <kndrvt@yandex-team.ru>  Mon, 05 Feb 2024 12:31:24 -0000
+
 portoshim (1.0.10) stable; urgency=low
   [ kndrvt ]
       runtime_mapper: fail start in event of error in NewPortoshimRuntimeMapper
