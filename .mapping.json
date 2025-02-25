@@ -1,4 +1,5 @@
 {
+  ".":"infra/porto/plugins/portoshim",
   ".github/workflows/make.yml":"infra/porto/plugins/portoshim/.github/workflows/make.yml",
   ".github/workflows/release.yml":"infra/porto/plugins/portoshim/.github/workflows/release.yml",
   "AUTHORS":"infra/porto/plugins/portoshim/AUTHORS",
