@@ -61,16 +61,12 @@ type PortoshimRuntimeMapper struct {
 
 func NewPortoshimRuntimeMapper() (*PortoshimRuntimeMapper, error) {
 	rm := &PortoshimRuntimeMapper{}
-
 	netPlugin, err := cni.New(cni.WithMinNetworkCount(networkAttachCount),
 		cni.WithPluginConfDir(Cfg.CNI.ConfDir),
 		cni.WithPluginDir([]string{Cfg.CNI.BinDir}),
 		cni.WithInterfacePrefix(ifPrefixName))
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize cni: %v", err)
-	}
-	if err = netPlugin.Load(cni.WithLoNetwork, cni.WithDefaultConf); err != nil {
-		return nil, fmt.Errorf("failed to load cni configuration: %v", err)
 	}
 	rm.netPlugin = netPlugin
 
@@ -805,6 +801,10 @@ func (m *PortoshimRuntimeMapper) preparePodNetwork(ctx context.Context, podSpec 
 
 	if m.netPlugin == nil {
 		return fmt.Errorf("cni wasn't initialized")
+	}
+
+	if err := m.netPlugin.Load(cni.WithLoNetwork, cni.WithDefaultConf); err != nil {
+		return fmt.Errorf("failed to load cni configuration: %v", err)
 	}
 
 	netnsPath, err := netns.NewNetNS(Cfg.CNI.NetnsDir)
