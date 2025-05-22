@@ -1,12 +1,12 @@
 [Unit]
+After=yandex-porto.service
+Requires=yandex-porto.service
 Description=CRI plugin for Porto
-After=network-online.target
-Requires=network-online.target
 ConditionVirtualization=!container
 Documentation=https://github.com/ten-nancy/portoshim
 
 [Service]
-ExecStart=/usr/sbin/portoshim
+ExecStart=bash -c "nsenter -m -t $(cat /run/portod.pid) /usr/sbin/portoshim"
 Restart=on-failure
 KillSignal=SIGTERM
 KillMode=process
