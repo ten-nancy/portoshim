@@ -21,7 +21,7 @@ func main() {
 	flag.Parse()
 
 	if err = InitConfig(*configPath); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "сannot init portoshim config: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "cannot init portoshim config: %v\n", err)
 		return
 	}
 
