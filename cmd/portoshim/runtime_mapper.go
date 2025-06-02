@@ -875,6 +875,19 @@ func (m *PortoshimRuntimeMapper) preparePodNetwork(ctx context.Context, podSpec 
 	return nil
 }
 
+func prepareContainerDevices(containerSpec *pb.TContainerSpec, devices []*v1.Device) {
+	portoDevices := &pb.TContainerDevices{}
+	for _, device := range devices {
+		portoDevice := &pb.TContainerDevice{
+			Device: &device.HostPath,
+			Access: &device.Permissions,
+			Path:   &device.ContainerPath,
+		}
+		portoDevices.Device = append(portoDevices.Device, portoDevice)
+	}
+	containerSpec.Devices = portoDevices
+}
+
 // RUNTIME SERVICE INTERFACE
 
 func (m *PortoshimRuntimeMapper) Version(ctx context.Context, req *v1.VersionRequest) (*v1.VersionResponse, error) {
@@ -1191,6 +1204,24 @@ func (m *PortoshimRuntimeMapper) CreateContainer(ctx context.Context, req *v1.Cr
 	// mounts
 	DebugLog(ctx, "prepare container mounts: %+v", req.GetConfig().GetMounts())
 	prepareContainerMounts(ctx, id, volumes, req.GetConfig().GetMounts())
+
+	// devices
+	DebugLog(ctx, "prepare container devices: %+v", id)
+	prepareContainerDevices(containerSpec, req.GetConfig().GetDevices())
+
+	// spec for UpdateFromSpec for sandbox container
+	devicesExplicitValue := true
+	sandboxUpdateSpec := &pb.TContainerSpec{
+		Name:            &req.PodSandboxId,
+		Devices:         containerSpec.Devices,
+		DevicesExplicit: &devicesExplicitValue,
+	}
+
+	// update sandbox container
+	DebugLog(ctx, "update sandbox container from spec: %+v", id)
+	if err = pc.UpdateFromSpec(sandboxUpdateSpec, false); err != nil {
+		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+	}
 
 	// create container and roootfs
 	DebugLog(ctx, "create container from spec: %+v", id)
