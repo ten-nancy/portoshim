@@ -1,3 +1,16 @@
+portoshim (1.0.12) stable; urgency=low
+  [ ivan-timokhin ]
+      GPUINFRA-668: add devices support to portoshim container create
+  [ kositsyn-pa ]
+      IGNIETFERRO-2127 remove unnecessary migrations for mixlang linter
+  [ mikesenin ]
+      Add missed ReadOnly option for portoshim
+      Run portoshim in portod mnt namespace
+      Do not fail before CNI initialisation
+  last commit: 30dde4d1748f2d6a527058b998c87789e71fc8a1
+
+ -- Lev Pantyukhin <kndrvt@yandex-team.ru>  Wed, 11 Jun 2025 09:45:08 -0000
+
 portoshim (1.0.11) stable; urgency=low
   [ mikesenin ]
       portoshim: remove debug flag from portoshim.service
