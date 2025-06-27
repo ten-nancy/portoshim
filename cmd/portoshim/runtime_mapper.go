@@ -134,9 +134,9 @@ func convertContainerState(state string) v1.ContainerState {
 }
 
 // resources
-func prepareResources(spec *pb.TContainerSpec, cfg *v1.LinuxContainerResources) {
+func prepareResources(ctx context.Context, spec *pb.TContainerSpec, cfg *v1.LinuxContainerResources) error {
 	if cfg == nil {
-		return
+		return nil
 	}
 
 	// cpu
@@ -146,8 +146,21 @@ func prepareResources(spec *pb.TContainerSpec, cfg *v1.LinuxContainerResources) 
 
 	// memory
 	memoryValue := uint64(cfg.MemoryLimitInBytes)
-	spec.MemoryLimit = &memoryValue
-	spec.MemoryGuarantee = &memoryValue
+	//spec.MemoryLimit = &memoryValue
+	err := setPropertyByNameInPorto(ctx, spec, "MemoryLimit", &memoryValue)
+
+	if err != nil {
+		return fmt.Errorf("%v, can't set property  %s", err, "MemoryLimit")
+	}
+	DebugLog(ctx, "MemoryLimit: %v", spec.MemoryLimit)
+
+	//spec.MemoryGuarantee = &memoryValue
+	err = setPropertyByNameInPorto(ctx, spec, "MemoryGuarantee", &memoryValue)
+
+	if err != nil {
+		return fmt.Errorf("%v, can't set property  %s", err, "MemoryGuarantee")
+	}
+	return nil
 }
 
 // command and env
@@ -926,7 +939,9 @@ func (m *PortoshimRuntimeMapper) RunPodSandbox(ctx context.Context, req *v1.RunP
 	// resources
 	if res := req.GetConfig().GetLinux().GetResources(); res != nil {
 		DebugLog(ctx, "prepare resources: %+v", res)
-		prepareResources(podSpec, res)
+		if err = prepareResources(ctx, podSpec, res); err != nil {
+			return nil, fmt.Errorf("%v Failed to prepare resources", err)
+		}
 	}
 
 	// labels and annotations
@@ -1180,7 +1195,9 @@ func (m *PortoshimRuntimeMapper) CreateContainer(ctx context.Context, req *v1.Cr
 	// resources
 	if res := req.GetConfig().GetLinux().GetResources(); res != nil {
 		DebugLog(ctx, "prepare resources: %+v", res)
-		prepareResources(containerSpec, res)
+		if err = prepareResources(ctx, containerSpec, res); err != nil {
+			return nil, fmt.Errorf("%v Failed to prepare resources", err)
+		}
 	}
 
 	// labels and annotations
