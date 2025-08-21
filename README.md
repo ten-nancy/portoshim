@@ -84,89 +84,97 @@ sudo portoshim --config <config path>
 
 ### Fields description
 
-Portoshim configuration file is a YAML file. It has following fields:  
+Portoshim configuration file is a YAML file. It has following fields:
 
 - **Portoshim**:
-  - **ConfigPath**  
-    default: ```/etc/portoshim.yaml```  
-    Configuration file path. Can be override only by ```--config``` flag.  
+  - **ConfigPath**
+    default: ```/etc/portoshim.yaml```
+    Configuration file path. Can be override only by ```--config``` flag.
 
-  - **Socket**  
-    default: ```/run/portoshim.sock```  
-    Portoshim socket path.  
+  - **Socket**
+    default: ```/run/portoshim.sock```
+    Portoshim socket path.
 
-  - **LogsDir**  
-    default: ```/var/log/portoshim```  
-    Directory for logs. Portoshim logs are written to ```LogsDir/portoshim.log```.  
+  - **LogsDir**
+    default: ```/var/log/portoshim```
+    Directory for logs. Portoshim logs are written to ```LogsDir/portoshim.log```.
 
-  - **VolumesDir**  
-    default: ```/place/portoshim_volumes```  
-    Directory for container root volumes.  
+  - **VolumesDir**
+    default: ```/place/portoshim_volumes```
+    Directory for container root volumes.
 
 - **Porto**:
 
-  - **RuntimeName**  
-    default: ```porto```  
-    Container runtime name.  
+  - **RuntimeName**
+    default: ```porto```
+    Container runtime name. Provide in Version CRI request to kubelet.
 
-  - **Socket**  
-    default: ```/run/portod.socket```  
-    Porto socket path. Should not be changed.  
+  - **Socket**
+    default: ```/run/portod.socket```
+    Porto socket path. Should not be changed.
 
   - **SocketTimeout**
-    default: ```5m```  
-    Timeout for connections with Porto via socket. Portoshim establishes one connection per request.  
+    default: ```5m```
+    Timeout for connections with Porto via socket. Portoshim establishes one connection per request.
 
-  - **ImagesDir**  
-    default: ```/place/porto_docker```  
-    Directory with Porto images. Should not be changed.  
+  - **ImagesDir**
+    default: ```/place/porto_docker```
+    Directory with Porto images. Should not be changed.
+
+  - **ParentContainer**
+    default: empty
+    Parent container name, the name should be in form of [porto container name](https://github.com/ten-nancy/porto/blob/main/doc/porto.md#name-1).
 
 - **CNI**:
 
-  - **ConfDir**  
-    default: ```/etc/cni/net.d```  
-    Directory with CNI configuration files.  
+  - **ConfDir**
+    default: ```/etc/cni/net.d```
+    Directory with CNI configuration files.
 
-  - **BinDir**  
-    default: ```/opt/cni/bin```  
-    Directory with CNI binary file.  
+  - **BinDir**
+    default: ```/opt/cni/bin```
+    Directory with CNI binary file.
 
-  - **NetnsDir**  
-    default: ```/var/run/netns```  
-    Directory with network namespaces.  
+  - **NetnsDir**
+    default: ```/var/run/netns```
+    Directory with network namespaces.
 
 - **StreamingServer**:
 
-  - **Address**  
-    default: ```[::]```  
-    IP address for streaming server. Streaming server is used for std io flows while exec using.  
+  - **Address**
+    default: ```[::]```
+    IP address for streaming server. Streaming server is used for std io flows while exec using.
 
-  - **Port**  
-    default: ```7255```  
+  - **Port**
+    default: ```7255```
     Port for streaming server. Streaming server is used for std io flows while exec using.
 
 - **Images**:
 
-  - **PauseImage**  
-    default: ```registry.k8s.io/pause:3.7```  
-    Pause image for pods.  
+  - **Place**
+    default: empty
+    Image place, each nested container could work with place which are in the chroot of parent container.
 
-  - **Registries**  
-    default: empty  
-    List of registry info. Registry info has following fields:  
-    - **Host**  
-      Example: ```registry-1.docker.io```  
-      Host of registry.  
+  - **PauseImage**
+    default: ```registry.k8s.io/pause:3.7```
+    Pause image for pods.
 
-    - **AuthToken**  
-      Example: ```file:/path/to/file/with/token```  
+  - **Registries**
+    default: empty
+    List of registry info. Registry info has following fields:
+    - **Host**
+      Example: ```registry-1.docker.io```
+      Host of registry.
+
+    - **AuthToken**
+      Example: ```file:/path/to/file/with/token```
       Authentication token. It may be set explicitly, or a path to the file containing the token may be used. Otherwise, it should be requested using the auth path and auth service.
 
-    - **AuthPath**  
-      Example: ```https://auth.docker.io/token```  
+    - **AuthPath**
+      Example: ```https://auth.docker.io/token```
       Path (URL exactly) which is used for token request.
 
-    - **AuthService**  
+    - **AuthService**
       Example: ```registry.docker.io```  
       Service which is specified as parameter ```service``` while token is requesting.  
 

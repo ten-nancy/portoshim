@@ -21,6 +21,8 @@ type PortoshimConfig struct {
 		Socket        string        `yaml:"Socket"`
 		SocketTimeout time.Duration `yaml:"SocketTimeout"`
 		ImagesDir     string        `yaml:"ImagesDir"`
+
+		ParentContainer string `yaml:"ParentContainer"`
 	} `yaml:"Porto"`
 
 	CNI struct {
@@ -37,6 +39,7 @@ type PortoshimConfig struct {
 	Images struct {
 		PauseImage string         `yaml:"PauseImage"`
 		Registries []RegistryInfo `yaml:"Registries"`
+		Place      string         `yaml:"Place"`
 	} `yaml:"Images"`
 }
 

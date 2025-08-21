@@ -59,7 +59,7 @@ func (m *PortoshimImageMapper) ListImages(ctx context.Context, req *v1.ListImage
 func (m *PortoshimImageMapper) ImageStatus(ctx context.Context, req *v1.ImageStatusRequest) (*v1.ImageStatusResponse, error) {
 	pc := getPortoClient(ctx)
 
-	image, err := pc.DockerImageStatus(req.GetImage().GetImage(), "")
+	image, err := pc.DockerImageStatus(req.GetImage().GetImage(), Cfg.Images.Place)
 	if err != nil {
 		if err.(*porto.PortoError).Code == pb.EError_DockerImageNotFound {
 			return &v1.ImageStatusResponse{
@@ -77,6 +77,7 @@ func (m *PortoshimImageMapper) ImageStatus(ctx context.Context, req *v1.ImageSta
 func (m *PortoshimImageMapper) PullImage(ctx context.Context, req *v1.PullImageRequest) (*v1.PullImageResponse, error) {
 	pc := getPortoClient(ctx)
 
+	DebugLog(ctx, "pull image: %s, %s", Cfg.Images.PauseImage, req.GetImage().GetImage())
 	registry := GetImageRegistry(req.GetImage().GetImage())
 	authToken := registry.AuthToken
 	if authToken == "" && req.GetAuth() != nil && req.GetAuth().GetPassword() != "" {
@@ -84,7 +85,8 @@ func (m *PortoshimImageMapper) PullImage(ctx context.Context, req *v1.PullImageR
 	}
 
 	dockerImage := porto.DockerImage{
-		Name: req.GetImage().GetImage(),
+		Name:  req.GetImage().GetImage(),
+		Place: Cfg.Images.Place,
 	}
 	registryCreds := porto.DockerRegistryCredentials{
 		AuthToken:   authToken,
@@ -103,7 +105,7 @@ func (m *PortoshimImageMapper) PullImage(ctx context.Context, req *v1.PullImageR
 func (m *PortoshimImageMapper) RemoveImage(ctx context.Context, req *v1.RemoveImageRequest) (*v1.RemoveImageResponse, error) {
 	pc := getPortoClient(ctx)
 
-	err := pc.RemoveDockerImage(req.GetImage().GetImage(), "")
+	err := pc.RemoveDockerImage(req.GetImage().GetImage(), Cfg.Images.Place)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
