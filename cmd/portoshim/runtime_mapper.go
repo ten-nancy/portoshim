@@ -559,7 +559,9 @@ func preparePodLabels(podSpec *pb.TContainerSpec, cfg *v1.PodSandboxConfig) {
 	labels["portoshim.pod.id"] = id
 	labels["portoshim.pod.image"] = Cfg.Images.PauseImage
 
-	podSpec.Labels = convertToStringMap(convertToPortoLabels(labels, cfg.GetAnnotations()))
+	portoLabels := convertToPortoLabels(labels, cfg.GetAnnotations())
+	portoLabels["INFRA.engine"] = "k8s"
+	podSpec.Labels = convertToStringMap(portoLabels)
 }
 
 func prepareContainerLabels(containerSpec *pb.TContainerSpec, cfg *v1.ContainerConfig, image string) {
@@ -578,7 +580,9 @@ func prepareContainerLabels(containerSpec *pb.TContainerSpec, cfg *v1.ContainerC
 	labels["portoshim.container.id"] = id
 	labels["portoshim.container.image"] = image
 
-	containerSpec.Labels = convertToStringMap(convertToPortoLabels(labels, cfg.GetAnnotations()))
+	portoLabels := convertToPortoLabels(labels, cfg.GetAnnotations())
+	portoLabels["INFRA.engine"] = "k8s"
+	containerSpec.Labels = convertToStringMap(portoLabels)
 }
 
 // getters and converters
