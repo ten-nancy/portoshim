@@ -388,13 +388,13 @@ func prepareRoot(ctx context.Context, spec *pb.TContainerSpec, volumes *[]*pb.TV
 			return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 		}
 	}
-
 	root := pb.TVolumeSpec{
 		Links: []*pb.TVolumeLink{&pb.TVolumeLink{
 			Container: &id,
 			Target:    getStringPointer("/"),
 		}},
 		Backend: getStringPointer("overlay"),
+		Place:   &Cfg.Images.Place,
 		Image:   &image,
 	}
 
@@ -1303,7 +1303,7 @@ func (m *PortoshimRuntimeMapper) CreateContainer(ctx context.Context, req *v1.Cr
 
 	// get image
 	DebugLog(ctx, "check image: %s", imageName)
-	image, err := pc.DockerImageStatus(imageName, "")
+	image, err := pc.DockerImageStatus(imageName, Cfg.Images.Place)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
