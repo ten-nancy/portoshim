@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -437,17 +438,22 @@ func prepareContainerMounts(ctx context.Context, id string, volumes *[]*pb.TVolu
 
 		// TODO: durty hack
 		if mount.ContainerPath == "/var/run/secrets/kubernetes.io/serviceaccount" {
-			for {
+			retry(ctx, func() error {
 				_, err := os.Stat(mount.HostPath + "/ca.crt")
 				if err == nil {
-					break
+					return nil
 				}
-				WarnLog(ctx, "%s waiting for a %s", id, mount.HostPath)
-				time.Sleep(1000)
-			}
+				return fmt.Errorf("%s waiting for a %s", id, mount.HostPath)
+			}, func() int {
+				return 1000
+			}, 3)
 		}
 		*volumes = append(*volumes, convertMountToVolumeSpec(id, mount))
 	}
+	sort.Slice(*volumes, func(i, j int) bool {
+		return *((*volumes)[i].Links[0].Target) < *((*volumes)[j].Links[0].Target)
+	})
+
 }
 
 // labels and annotations
