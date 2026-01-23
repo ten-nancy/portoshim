@@ -16,6 +16,7 @@ import (
 
 	"github.com/containerd/containerd/pkg/netns"
 	cni "github.com/containerd/go-cni"
+	"github.com/ten-nancy/porto/src/api/go/porto"
 	pb "github.com/ten-nancy/porto/src/api/go/porto/pkg/rpc"
 	"go.uber.org/zap"
 	v1 "k8s.io/cri-api/pkg/apis/runtime/v1"
@@ -1020,12 +1021,41 @@ func (m *PortoshimRuntimeMapper) RunPodSandbox(ctx context.Context, req *v1.RunP
 	id := createID(req.GetConfig().GetMetadata().GetName())
 	pc := getPortoClient(ctx)
 	portoid := *addPortoPrefix(ctx, &id)
+	var (
+		err   error
+		image *pb.TDockerImage
+	)
 
 	// get image
 	DebugLog(ctx, "check image: %s", Cfg.Images.PauseImage)
-	image, err := pc.DockerImageStatus(Cfg.Images.PauseImage, Cfg.Images.Place)
+	retry(ctx, func() error {
+		image, err = pc.DockerImageStatus(Cfg.Images.PauseImage, Cfg.Images.Place)
+		if err == nil {
+			return nil
+		}
+		DebugLog(ctx, "No image %s need to pull it", Cfg.Images.PauseImage)
+
+		registry := GetImageRegistry(Cfg.Images.PauseImage)
+		authToken := registry.AuthToken
+
+		registryCreds := porto.DockerRegistryCredentials{
+			AuthToken: authToken,
+		}
+
+		image, err = pc.PullDockerImage(porto.DockerImage{
+			Name:  Cfg.Images.PauseImage,
+			Place: Cfg.Images.Place,
+		}, registryCreds)
+		if err != nil {
+			return fmt.Errorf("Failed to pull docker image %s: %v", Cfg.Images.PauseImage, err)
+		}
+		return nil
+	}, func() int {
+		return 1000
+	}, 3)
+
 	if err != nil {
-		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+		return nil, fmt.Errorf("No image %v", err)
 	}
 
 	// specs initialization for CreateFromSpec

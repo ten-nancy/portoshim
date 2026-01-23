@@ -95,7 +95,7 @@ func (m *PortoshimImageMapper) PullImage(ctx context.Context, req *v1.PullImageR
 	}
 	image, err := pc.PullDockerImage(dockerImage, registryCreds)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+		return nil, fmt.Errorf("Failed to pull docker image %s: %v", getCurrentFuncName(), err)
 	}
 
 	return &v1.PullImageResponse{

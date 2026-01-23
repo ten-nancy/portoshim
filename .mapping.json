@@ -18,6 +18,7 @@
   "build/packages/portoshim/debian/rules":"infra/porto/plugins/portoshim/build/packages/portoshim/debian/rules",
   "cmd/logshim/main.go":"infra/porto/plugins/portoshim/cmd/logshim/main.go",
   "cmd/portoshim/config.go":"infra/porto/plugins/portoshim/cmd/portoshim/config.go",
+  "cmd/portoshim/config_test.go":"infra/porto/plugins/portoshim/cmd/portoshim/config_test.go",
   "cmd/portoshim/cri_api.go":"infra/porto/plugins/portoshim/cmd/portoshim/cri_api.go",
   "cmd/portoshim/image_mapper.go":"infra/porto/plugins/portoshim/cmd/portoshim/image_mapper.go",
   "cmd/portoshim/logger.go":"infra/porto/plugins/portoshim/cmd/portoshim/logger.go",
