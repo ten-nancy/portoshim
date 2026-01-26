@@ -23,12 +23,14 @@ type PortoshimConfig struct {
 		ImagesDir     string        `yaml:"ImagesDir"`
 
 		ParentContainer string `yaml:"ParentContainer"`
+		AbsoluteCntName bool   `yaml:"AbsoluteCntName"`
 	} `yaml:"Porto"`
 
 	CNI struct {
 		ConfDir  string `yaml:"ConfDir"`
 		BinDir   string `yaml:"BinDir"`
 		NetnsDir string `yaml:"NetnsDir"`
+		NetType  string `yaml:"NetType"`
 	} `yaml:"CNI"`
 
 	StreamingServer struct {
@@ -54,10 +56,12 @@ Porto:
     Socket:      /run/portod.socket
     SocketTimeout: 5m
     ImagesDir:   /place/porto_docker
+    AbsoluteCntName: true
 CNI:
     ConfDir:  /etc/cni/net.d
     BinDir:   /opt/cni/bin
     NetnsDir: /var/run/netns
+    NetType:  "netns"
 StreamingServer:
     Address: "[::]"
     Port:    7255

@@ -30,6 +30,7 @@
   "cmd/portoshim/runtime_mapper_test.go":"infra/porto/plugins/portoshim/cmd/portoshim/runtime_mapper_test.go",
   "cmd/portoshim/server.go":"infra/porto/plugins/portoshim/cmd/portoshim/server.go",
   "cmd/portoshim/streaming.go":"infra/porto/plugins/portoshim/cmd/portoshim/streaming.go",
+  "cmd/portoshim/trace.go":"infra/porto/plugins/portoshim/cmd/portoshim/trace.go",
   "cmd/portoshim/volume.go":"infra/porto/plugins/portoshim/cmd/portoshim/volume.go",
   "docs/images/container_runtimes.svg":"infra/porto/plugins/portoshim/docs/images/container_runtimes.svg",
   "go.mod":"infra/porto/plugins/portoshim/go.mod",

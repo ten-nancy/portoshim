@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	intr "math/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -65,7 +67,11 @@ type PortoshimRuntimeMapper struct {
 
 func NewPortoshimRuntimeMapper() (*PortoshimRuntimeMapper, error) {
 	rm := &PortoshimRuntimeMapper{}
-	netPlugin, err := cni.New(cni.WithMinNetworkCount(networkAttachCount),
+	netCount := int(1)
+	if len(Cfg.Porto.ParentContainer) == 0 || Cfg.CNI.NetType == "netns" {
+		netCount = networkAttachCount
+	}
+	netPlugin, err := cni.New(cni.WithMinNetworkCount(netCount),
 		cni.WithPluginConfDir(Cfg.CNI.ConfDir),
 		cni.WithPluginDir([]string{Cfg.CNI.BinDir}),
 		cni.WithInterfacePrefix(ifPrefixName))
@@ -98,7 +104,7 @@ func createID(name string) string {
 		length = len(name)
 	}
 	// max length of return value is 58 + 1 + 4 = 63, so container id <= 127
-	return fmt.Sprintf("%s-%04x", name[:length], rand.Intn(65536))
+	return fmt.Sprintf("%s-%04x", name[:length], intr.Intn(65536))
 }
 
 func getPodAndContainer(id string) (string, string) {
@@ -132,6 +138,9 @@ const (
 )
 
 func getParentCnt(ctx context.Context) string {
+	if !Cfg.Porto.AbsoluteCntName {
+		return Cfg.Porto.ParentContainer
+	}
 	once.Do(func() {
 		var err error
 		pc := getPortoClient(ctx)
@@ -437,7 +446,8 @@ func prepareContainerMounts(ctx context.Context, id string, volumes *[]*pb.TVolu
 			continue
 		}
 
-		// TODO: durty hack
+		// TODO: dirty hack, replace it to general code
+		// since: 1) it could be another type of Secrets 2) it could be tmpfs
 		if mount.ContainerPath == "/var/run/secrets/kubernetes.io/serviceaccount" {
 			retry(ctx, func() error {
 				_, err := os.Stat(mount.HostPath + "/ca.crt")
@@ -850,11 +860,19 @@ func convertPodSandboxNetworkStatus(addresses string) *v1.PodSandboxNetworkStatu
 	return &status
 }
 
-func parsePropertyNetNS(prop string) string {
-	netNSL := strings.Fields(prop)
-	if netNSL[0] == "netns" && len(netNSL) > 1 {
-		return netNSL[1]
+func parsePropertyNetNS(props string) string {
+	for _, prop := range strings.Split(props, ";") {
+		netNSL := strings.Fields(prop)
+		for k, nsl := range netNSL {
+			if nsl == "netns" && len(netNSL) > k+1 {
+				return netNSL[k+1]
+			}
+			if nsl == "L3" && len(netNSL) > k+1 {
+				return netNSL[k+1]
+			}
+		}
 	}
+
 	return ""
 }
 
@@ -869,6 +887,25 @@ func convertToCNILabels(id string, config *v1.PodSandboxConfig) map[string]strin
 }
 
 func (m *PortoshimRuntimeMapper) preparePodNetwork(ctx context.Context, podSpec *pb.TContainerSpec, cfg *v1.PodSandboxConfig) error {
+	// TODO support tunneling as well
+	/* Cfg: []*pb.TContainerNetOption{
+		&pb.TContainerNetOption{
+			Opt: getStringPointer("ipip6"),
+			// here we need a ipam, maybe delegate it to CNI
+			// TODO just for test
+			// learn how to request it from racktables
+			Arg: []string{"portoip66", "2a02:6b8:c1c:287:0:50ec:5e36:0", "2a02:6b8:c1b:2b1b:0:50ec:7b72:0"},
+		},
+		&pb.TContainerNetOption{
+			Opt: getStringPointer("L3"),
+			Arg: []string{"veth"},
+		},
+
+		addrs = append(addrs, &pb.TContainerIpConfig_TContainerIp{
+			Dev: getStringPointer("portoip66"),
+			Ip:  getStringPointer("2001:db8:100::3"),
+		})
+	}, */
 	id := podSpec.GetName()
 
 	if nsOpts := cfg.GetLinux().GetSecurityContext().GetNamespaceOptions(); nsOpts == nil || nsOpts.GetNetwork() == v1.NamespaceMode_NODE {
@@ -879,22 +916,44 @@ func (m *PortoshimRuntimeMapper) preparePodNetwork(ctx context.Context, podSpec 
 		return fmt.Errorf("cni wasn't initialized")
 	}
 
-	if err := m.netPlugin.Load(cni.WithLoNetwork, cni.WithDefaultConf); err != nil {
+	opts := make([]cni.Opt, 0)
+
+	if len(Cfg.Porto.ParentContainer) == 0 || Cfg.CNI.NetType == "netns" {
+		opts = append(opts, cni.WithLoNetwork)
+	}
+	opts = append(opts, cni.WithDefaultConf)
+
+	DebugLog(ctx, "opts: %+v", opts)
+	if err := m.netPlugin.Load(opts...); err != nil {
 		return fmt.Errorf("failed to load cni configuration: %v", err)
 	}
 
-	netnsPath, err := netns.NewNetNS(Cfg.CNI.NetnsDir)
-	if err != nil {
-		return fmt.Errorf("failed to create network namespace, pod %s: %w", id, err)
+	traceNetworks(ctx, m.netPlugin.GetConfig().Networks)
+
+	var netnsPathStr string
+	if len(Cfg.Porto.ParentContainer) == 0 || Cfg.CNI.NetType == "netns" {
+		netnsPath, err := netns.NewNetNS(Cfg.CNI.NetnsDir)
+		if err != nil {
+			return fmt.Errorf("Failed to create network namespace, pod %s: %w", id, err)
+		}
+		netnsPathStr = netnsPath.GetPath()
+	} else {
+		randBytes := make([]byte, 8)
+		if _, err := rand.Read(randBytes); err != nil {
+			return fmt.Errorf("Failed to generate net ns id %v", err)
+		}
+		randomSuffix := hex.EncodeToString(randBytes)
+		netnsPathStr = filepath.Join(Cfg.CNI.NetnsDir, "cni-"+randomSuffix)
 	}
 
-	DebugLog(ctx, "NewNetNS created: %s", netnsPath.GetPath())
+	DebugLog(ctx, "NewNetNS created: %s", netnsPathStr)
 	portoid := removePortoPrefix(ctx, id)
 	cniNSOpts := []cni.NamespaceOpts{
 		cni.WithCapability("io.kubernetes.cri.pod-annotations", cfg.Annotations),
 		cni.WithLabels(convertToCNILabels(portoid, cfg)),
 	}
-	result, err := m.netPlugin.Setup(ctx, portoid, netnsPath.GetPath(), cniNSOpts...)
+
+	result, err := m.netPlugin.Setup(ctx, portoid, netnsPathStr, cniNSOpts...)
 	if err != nil {
 		DebugLog(ctx, "Failed to setup: %v", portoid)
 		return err
@@ -907,31 +966,49 @@ func (m *PortoshimRuntimeMapper) preparePodNetwork(ctx context.Context, podSpec 
 	podSpec.Hostname = getStringPointer(cfg.GetHostname())
 
 	// net
-	podSpec.Net = &pb.TContainerNetConfig{
-		Cfg: []*pb.TContainerNetOption{
-			&pb.TContainerNetOption{
-				Opt: getStringPointer("netns"),
-				Arg: []string{filepath.Base(netnsPath.GetPath())},
+	if len(Cfg.Porto.ParentContainer) == 0 || Cfg.CNI.NetType == "netns" {
+		podSpec.Net = &pb.TContainerNetConfig{
+			Cfg: []*pb.TContainerNetOption{
+				&pb.TContainerNetOption{
+					Opt: getStringPointer("netns"),
+					Arg: []string{filepath.Base(netnsPathStr)},
+				},
 			},
-		},
+		}
+	} else {
+		podSpec.Net = &pb.TContainerNetConfig{
+			Cfg: []*pb.TContainerNetOption{
+				&pb.TContainerNetOption{
+					Opt: getStringPointer("L3"),
+					Arg: []string{defaultIfName},
+				},
+			},
+		}
+
+		// TODO(alexperevalov) it looks like a hack
+		// portod can configure L3 net in nested containers only when
+		// userns is enabled, otherwise need to modify portod
+		// https://github.com/ten-nancy/porto/blob/390319674c5cf51e5193355bf5c1a357bd5d2ced/src/network.cpp#L3952
+		podSpec.Userns = getBoolPointer(true)
 	}
 
-	// ip
-	addrs := []*pb.TContainerIpConfig_TContainerIp{}
-	for _, ip := range result.Interfaces[defaultIfName].IPConfigs {
-		ipv6 := ip.IP.To16()
-		if ipv6 != nil {
-			addrs = append(addrs, &pb.TContainerIpConfig_TContainerIp{
-				Dev: getStringPointer(defaultIfName),
-				Ip:  getStringPointer(ipv6.String()),
-			})
+	if iface, ok := result.Interfaces[defaultIfName]; ok && iface != nil {
+		addrs := []*pb.TContainerIpConfig_TContainerIp{}
+		for _, ip := range result.Interfaces[defaultIfName].IPConfigs {
+			ipv6 := ip.IP.To16()
+			if ipv6 != nil {
+				addrs = append(addrs, &pb.TContainerIpConfig_TContainerIp{
+					Dev: getStringPointer(defaultIfName),
+					Ip:  getStringPointer(ipv6.String()),
+				})
+			}
 		}
+		podSpec.Ip = &pb.TContainerIpConfig{
+			Cfg: addrs,
+		}
+		addrJson, _ := json.Marshal(addrs)
+		DebugLog(ctx, "addrs: %v", string(addrJson))
 	}
-	podSpec.Ip = &pb.TContainerIpConfig{
-		Cfg: addrs,
-	}
-	addrJson, _ := json.Marshal(addrs)
-	DebugLog(ctx, "addrs: %v", string(addrJson))
 
 	// sysctl
 	podSpec.Sysctl = convertToStringMap(cfg.GetLinux().GetSysctls())
@@ -955,7 +1032,6 @@ func (m *PortoshimRuntimeMapper) preparePodNetwork(ctx context.Context, podSpec 
 			}
 		}
 	}
-
 	return nil
 }
 
@@ -1143,6 +1219,8 @@ func (m *PortoshimRuntimeMapper) StopPodSandbox(ctx context.Context, req *v1.Sto
 
 	portoid := *addPortoPrefix(ctx, &id)
 
+	DebugLog(ctx, "StopPodSandbox %v", portoid)
+
 	// pod existing
 	state, err := pc.GetProperty(portoid, "state")
 	if err != nil {
@@ -1185,10 +1263,14 @@ func (m *PortoshimRuntimeMapper) RemovePodSandbox(ctx context.Context, req *v1.R
 	}
 
 	// removes the network from the pod
+	// TODO(alexperevalov) better to introduce nonecni mode
+	//if len(Cfg.Porto.ParentContainer) == 0 {
 	netnsProp := parsePropertyNetNS(netProp)
+	DebugLog(ctx, "netnsProp %v", netnsProp)
 	if netnsProp != "" {
 		netnsPath := netns.LoadNetNS(filepath.Join(Cfg.CNI.NetnsDir, netnsProp))
-		if err := m.netPlugin.Remove(ctx, portoid, netnsPath.GetPath(), cni.WithLabels(map[string]string{})); err != nil {
+		traceNetworks(ctx, m.netPlugin.GetConfig().Networks)
+		if err := m.netPlugin.Remove(ctx, id, netnsPath.GetPath(), cni.WithLabels(map[string]string{})); err != nil {
 			return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 		}
 		if err := netnsPath.Remove(); err != nil {
@@ -1501,7 +1583,7 @@ func (m *PortoshimRuntimeMapper) RemoveContainer(ctx context.Context, req *v1.Re
 		return nil, fmt.Errorf("%s: %s specified ID belongs to pod", getCurrentFuncName(), id)
 	}
 
-	DebugLog(ctx, "RemoveContainer id{}", id)
+	DebugLog(ctx, "RemoveContainer id %v", id)
 
 	id = *addPortoPrefix(ctx, &id)
 	if err := pc.Destroy(id); err != nil {
