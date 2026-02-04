@@ -39,8 +39,13 @@ func (sr StreamingRuntime) Exec(_ context.Context, containerID string, cmd []str
 		return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
+	DebugLog(ctx, "Exec containerID %v", containerID)
+
 	pc := getPortoClient(ctx)
-	id := filepath.Join(containerID, createID("exec"))
+	DebugLog(ctx, "portoClient connected %v", pc.IsConnected())
+
+	portoContainerID := *addPortoPrefix(ctx, &containerID)
+	id := filepath.Join(portoContainerID, createID("exec"))
 
 	// spec initialization for CreateFromSpec
 	containerSpec := &pb.TContainerSpec{
@@ -49,10 +54,12 @@ func (sr StreamingRuntime) Exec(_ context.Context, containerID string, cmd []str
 	}
 
 	// environment variables
-	env, err := pc.GetProperty(containerID, "env")
+	env, err := pc.GetProperty(portoContainerID, "env")
 	if err != nil {
 		return fmt.Errorf("failed to get parent container %s env prop: %w", containerID, err)
 	}
+
+	DebugLog(ctx, "env %v", env)
 	prepareExecEnv(ctx, containerSpec, env)
 
 	// command

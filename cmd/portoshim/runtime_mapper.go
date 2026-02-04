@@ -1744,6 +1744,7 @@ func (m *PortoshimRuntimeMapper) ExecSync(ctx context.Context, req *v1.ExecSyncR
 	}
 
 	// environment variables
+	DebugLog(ctx, "GetProperty %v", portoContainerID)
 	env, err := pc.GetProperty(portoContainerID, "env")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get parent container %s env prop: %w", req.GetContainerId(), err)
@@ -1794,6 +1795,7 @@ func (m *PortoshimRuntimeMapper) ExecSync(ctx context.Context, req *v1.ExecSyncR
 }
 
 func (m *PortoshimRuntimeMapper) Exec(ctx context.Context, req *v1.ExecRequest) (*v1.ExecResponse, error) {
+	DebugLog(ctx, "Exec")
 	resp, err := m.streamingServer.GetExec(req)
 	if err != nil {
 		return nil, fmt.Errorf("unable to prepare exec endpoint: %v", err)
