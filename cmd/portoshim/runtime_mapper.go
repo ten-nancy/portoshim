@@ -865,7 +865,7 @@ func prepareContainerResolvConf(containerSpec *pb.TContainerSpec, cfg *v1.DNSCon
 
 func convertContainerNetNsMode(net string) v1.NamespaceMode {
 	netNSMode := v1.NamespaceMode_NODE
-	netNSProp := parsePropertyNetNS(net)
+	netNSProp := parsePropertiesNetNS(net, "netns", "L3")
 	if netNSProp != "" {
 		netNSMode = v1.NamespaceMode_POD
 	}
@@ -896,15 +896,14 @@ func convertPodSandboxNetworkStatus(addresses string) *v1.PodSandboxNetworkStatu
 	return &status
 }
 
-func parsePropertyNetNS(props string) string {
+func parsePropertiesNetNS(props string, requestedNets ...string) string {
 	for _, prop := range strings.Split(props, ";") {
 		netNSL := strings.Fields(prop)
 		for k, nsl := range netNSL {
-			if nsl == "netns" && len(netNSL) > k+1 {
-				return netNSL[k+1]
-			}
-			if nsl == "L3" && len(netNSL) > k+1 {
-				return netNSL[k+1]
+			for _, rNets := range requestedNets {
+				if nsl == rNets && len(netNSL) > k+1 {
+					return netNSL[k+1]
+				}
 			}
 		}
 	}
@@ -1299,10 +1298,7 @@ func (m *PortoshimRuntimeMapper) RemovePodSandbox(ctx context.Context, req *v1.R
 	}
 
 	// removes the network from the pod
-	// TODO(alexperevalov) better to introduce nonecni mode
-	//if len(Cfg.Porto.ParentContainer) == 0 {
-	netnsProp := parsePropertyNetNS(netProp)
-	DebugLog(ctx, "netnsProp %v", netnsProp)
+	netnsProp := parsePropertiesNetNS(netProp, "netns")
 	if netnsProp != "" {
 		netnsPath := netns.LoadNetNS(filepath.Join(Cfg.CNI.NetnsDir, netnsProp))
 		traceNetworks(ctx, m.netPlugin.GetConfig().Networks)
