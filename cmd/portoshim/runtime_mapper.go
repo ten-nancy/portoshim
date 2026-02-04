@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/containerd/containerd/pkg/netns"
@@ -137,18 +138,22 @@ const (
 	portoRoot = "/porto/"
 )
 
+func getAbsoluteNameOfParentCnt(ctx context.Context) string {
+	var err error
+	pc := getPortoClient(ctx)
+	parentCnt, err = pc.GetProperty(Cfg.Porto.ParentContainer, "absolute_name")
+	if err != nil {
+		DebugLog(ctx, "Can't get property absolute_name: %v", err)
+	}
+	return strings.TrimPrefix(parentCnt, portoRoot)
+}
+
 func getParentCnt(ctx context.Context) string {
 	if !Cfg.Porto.AbsoluteCntName {
 		return Cfg.Porto.ParentContainer
 	}
 	once.Do(func() {
-		var err error
-		pc := getPortoClient(ctx)
-		parentCnt, err = pc.GetProperty(Cfg.Porto.ParentContainer, "absolute_name")
-		if err != nil {
-			DebugLog(ctx, "Can't get property absolute_name: %v", err)
-		}
-		parentCnt = strings.TrimPrefix(parentCnt, portoRoot)
+		parentCnt = getAbsoluteNameOfParentCnt(ctx)
 	})
 	return parentCnt
 }
@@ -581,7 +586,38 @@ func preparePodLabels(podSpec *pb.TContainerSpec, cfg *v1.PodSandboxConfig) {
 	podSpec.Labels = convertToStringMap(portoLabels)
 }
 
-func prepareContainerLabels(containerSpec *pb.TContainerSpec, cfg *v1.ContainerConfig, image string) {
+/* prepareContainerLogs return path to logs */
+func prepareContainerLogs(ctx context.Context, containerSpec *pb.TContainerSpec) (string, error) {
+	var logPath string
+	id := containerSpec.GetName()
+	if len(Cfg.Porto.ParentContainer) == 0 {
+		logPath = filepath.Join("/place/porto/", id, "/stdout")
+	} else {
+		// TODO(pau) looks like a hack
+		dir := filepath.Join("/place/porto/", id)
+		if err := os.MkdirAll(dir, os.ModePerm); err != nil {
+			return "", fmt.Errorf("Failed to create directory for log path %v", err)
+		}
+
+		logPath = filepath.Join("/place/porto/", id, "/stdout")
+		DebugLog(ctx, "logpath: %v", logPath)
+		file, err := os.Create(logPath)
+		if err != nil {
+			return "", fmt.Errorf("Failed to create log file %v %v", logPath, err)
+		}
+		newFD, err := syscall.Dup(int(file.Fd()))
+		if err != nil {
+			return "", fmt.Errorf("Failed to dup %d", file.Fd())
+		}
+		stdoutPath := fmt.Sprintf("/dev/fd/%d", newFD)
+		containerSpec.StdoutPath = &stdoutPath
+
+	}
+	DebugLog(ctx, "pid %d, logPath: %s", os.Getpid(), logPath)
+	return logPath, nil
+}
+
+func prepareContainerLabels(ctx context.Context, containerSpec *pb.TContainerSpec, cfg *v1.ContainerConfig, image, logPath string) {
 	id := containerSpec.GetName()
 	labels := cfg.GetLabels()
 	if labels == nil {
@@ -593,7 +629,7 @@ func prepareContainerLabels(containerSpec *pb.TContainerSpec, cfg *v1.ContainerC
 		}
 	}
 	labels["attempt"] = fmt.Sprint(cfg.GetMetadata().GetAttempt())
-	labels["io.kubernetes.container.logpath"] = filepath.Join("/place/porto/", id, "/stdout")
+	labels["io.kubernetes.container.logpath"] = logPath
 	labels["portoshim.container.id"] = id
 	labels["portoshim.container.image"] = image
 
@@ -1446,7 +1482,12 @@ func (m *PortoshimRuntimeMapper) CreateContainer(ctx context.Context, req *v1.Cr
 		req.GetConfig().GetLabels(),
 		req.GetConfig().GetAnnotations(),
 	)
-	prepareContainerLabels(containerSpec, req.GetConfig(), *image.Id)
+	var logPath string
+	if logPath, err = prepareContainerLogs(ctx, containerSpec); err != nil {
+		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+	}
+
+	prepareContainerLabels(ctx, containerSpec, req.GetConfig(), *image.Id, logPath)
 
 	// resolv.conf
 	DebugLog(ctx, "prepare resolv.conf: %+v", req.GetSandboxConfig().GetDnsConfig())
