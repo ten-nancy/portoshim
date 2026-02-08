@@ -134,26 +134,19 @@ var (
 	parentCnt string
 )
 
-const (
-	portoRoot = "/porto/"
-)
-
-func getAbsoluteNameOfParentCnt(ctx context.Context) string {
-	var err error
-	pc := getPortoClient(ctx)
-	parentCnt, err = pc.GetProperty(Cfg.Porto.ParentContainer, "absolute_name")
-	if err != nil {
-		DebugLog(ctx, "Can't get property absolute_name: %v", err)
-	}
-	return strings.TrimPrefix(parentCnt, portoRoot)
-}
-
 func getParentCnt(ctx context.Context) string {
-	if !Cfg.Porto.AbsoluteCntName {
-		return Cfg.Porto.ParentContainer
-	}
 	once.Do(func() {
-		parentCnt = getAbsoluteNameOfParentCnt(ctx)
+		var err error
+		pc := getPortoClient(ctx)
+		parentCnt, err = pc.GetProperty(Cfg.Porto.ParentContainer, "absolute_name")
+		if err != nil {
+			DebugLog(ctx, "Can't get property absolute_name: %v", err)
+		}
+
+		li := strings.LastIndex(parentCnt, "/")
+		if li >= 0 {
+			parentCnt = parentCnt[li+1:]
+		}
 	})
 	return parentCnt
 }

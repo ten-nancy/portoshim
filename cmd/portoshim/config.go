@@ -23,7 +23,6 @@ type PortoshimConfig struct {
 		ImagesDir     string        `yaml:"ImagesDir"`
 
 		ParentContainer string `yaml:"ParentContainer"`
-		AbsoluteCntName bool   `yaml:"AbsoluteCntName"`
 	} `yaml:"Porto"`
 
 	CNI struct {
@@ -56,7 +55,6 @@ Porto:
     Socket:      /run/portod.socket
     SocketTimeout: 5m
     ImagesDir:   /place/porto_docker
-    AbsoluteCntName: true
 CNI:
     ConfDir:  /etc/cni/net.d
     BinDir:   /opt/cni/bin
