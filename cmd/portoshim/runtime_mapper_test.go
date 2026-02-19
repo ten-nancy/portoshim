@@ -186,9 +186,6 @@ func TestRunPodSandbox(t *testing.T) {
 	//nolint:sa1029
 	ctx = context.WithValue(ctx, "requestId", fmt.Sprintf("%08x", rand.Intn(4294967296)))
 
-	if err != nil {
-		t.Fatalf("Failed to create NewFakePortoshimRuntimeMapper: %v", err)
-	}
 	req := v1.RunPodSandboxRequest{
 		Config: &v1.PodSandboxConfig{
 			Metadata: &v1.PodSandboxMetadata{
