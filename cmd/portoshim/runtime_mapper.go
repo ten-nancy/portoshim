@@ -18,10 +18,12 @@ import (
 	"time"
 
 	"github.com/containerd/containerd/pkg/netns"
+	"github.com/containerd/continuity/fs"
 	cni "github.com/containerd/go-cni"
 	"github.com/ten-nancy/porto/src/api/go/porto"
 	pb "github.com/ten-nancy/porto/src/api/go/porto/pkg/rpc"
 	"go.uber.org/zap"
+	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/cri-api/pkg/apis/runtime/v1"
 	"k8s.io/kubernetes/pkg/kubelet/cri/streaming"
 )
@@ -426,7 +428,7 @@ func convertMountToVolumeSpec(id string, mount *v1.Mount) *pb.TVolumeSpec {
 	}
 }
 
-func prepareContainerMounts(ctx context.Context, id string, volumes *[]*pb.TVolumeSpec, mounts []*v1.Mount) {
+func prepareContainerMounts(ctx context.Context, id string, volumes *[]*pb.TVolumeSpec, mounts []*v1.Mount, waitPathes map[string][]string) {
 	// Mount logshim binary to container
 	mounts = append(mounts,
 		&v1.Mount{
@@ -446,13 +448,36 @@ func prepareContainerMounts(ctx context.Context, id string, volumes *[]*pb.TVolu
 
 		// TODO: dirty hack, replace it to general code
 		// since: 1) it could be another type of Secrets 2) it could be tmpfs
-		if mount.ContainerPath == "/var/run/secrets/kubernetes.io/serviceaccount" {
+		if pathes, ok := waitPathes[mount.ContainerPath]; ok {
+			DebugLog(ctx, "Secret hostpath: %v", mount.HostPath)
 			retry(ctx, func() error {
-				_, err := os.Stat(mount.HostPath + "/ca.crt")
-				if err == nil {
-					return nil
+				for _, fName := range pathes {
+					_, err := os.Stat(mount.HostPath + fName)
+					if err != nil {
+						return fmt.Errorf("%s %s waiting for a %s", id, fName, mount.HostPath)
+					}
 				}
-				return fmt.Errorf("%s waiting for a %s", id, mount.HostPath)
+				// TODO(alexperevalov) ugly dirty hack, tmpfs in nested mnt ns is not visible neither to parent mnt ns
+				// nor to another mnt ns which are child for the same parent ns
+				if len(Cfg.Porto.ParentContainer) != 0 {
+					hostPath := filepath.Dir(mount.HostPath)
+					randBytes := make([]byte, 8)
+					if _, err := rand.Read(randBytes); err != nil {
+						return fmt.Errorf("Failed to generate kube-api-access name")
+					}
+					randomSuffix := hex.EncodeToString(randBytes)
+					hostPathTmp := filepath.Join(hostPath, "kube-api-access-"+randomSuffix)
+					err := fs.CopyDir(hostPathTmp, mount.HostPath)
+					if err != nil {
+						return fmt.Errorf("Failed to copy from %s to %s, %v", mount.HostPath, hostPathTmp, err)
+					}
+
+					DebugLog(ctx, "Copied: %v, %v", mount.HostPath, hostPathTmp)
+					mount.HostPath = hostPathTmp
+					tmpfsDirKey := filepath.Join(id, mount.ContainerPath)
+					tmpfsDirs[tmpfsDirKey] = mount.HostPath
+				}
+				return nil
 			}, func() int {
 				return 1000
 			}, 3)
@@ -1488,9 +1513,42 @@ func (m *PortoshimRuntimeMapper) CreateContainer(ctx context.Context, req *v1.Cr
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
+	waitPathes := make(map[string][]string, 0)
+	waitPathes["/var/run/secrets/kubernetes.io/serviceaccount"] = []string{"/ca.crt", "/token", "/namespace"}
+	annotations := req.GetSandboxConfig().GetAnnotations()
+	lastApplied, ok := annotations["kubectl.kubernetes.io/last-applied-configuration"]
+	if ok {
+		DebugLog(ctx, "LastApplied: %v", lastApplied)
+		lastPod := corev1.Pod{}
+		err := json.Unmarshal([]byte(lastApplied), &lastPod)
+		if err != nil {
+			DebugLog(ctx, "Failed to unmarshal: %v", err)
+		}
+		volumeMounts := make(map[string]string, 0)
+		for _, cnts := range lastPod.Spec.Containers {
+			for _, volMounts := range cnts.VolumeMounts {
+				volumeMounts[volMounts.Name] = volMounts.MountPath
+			}
+		}
+		for _, volume := range lastPod.Spec.Volumes {
+			if volume.Secret != nil {
+				if volPath, ok := volumeMounts[volume.Name]; ok {
+					pathes := make([]string, 0)
+					for _, item := range volume.Secret.Items {
+						pathes = append(pathes, item.Path)
+					}
+					waitPathes[volPath] = pathes
+				} else {
+					WarnLog(ctx, "Secret %v not found", volume.Name)
+				}
+			}
+		}
+	}
+
 	// mounts
 	DebugLog(ctx, "prepare container mounts: %+v", req.GetConfig().GetMounts())
-	prepareContainerMounts(ctx, id, volumes, req.GetConfig().GetMounts())
+
+	prepareContainerMounts(ctx, id, volumes, req.GetConfig().GetMounts(), waitPathes)
 
 	// devices
 	DebugLog(ctx, "prepare container devices: %+v", id)
@@ -1567,14 +1625,6 @@ func (m *PortoshimRuntimeMapper) StartContainer(ctx context.Context, req *v1.Sta
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
-	// Let's do it here not async at first time and think about async later
-	if len(Cfg.Porto.ParentContainer) != 0 {
-		err := bindMountVolumes(ctx, id)
-		if err != nil {
-			return nil, fmt.Errorf("Failed to bind mount %v", err)
-		}
-	}
-
 	return &v1.StartContainerResponse{}, nil
 }
 
@@ -1615,7 +1665,20 @@ func (m *PortoshimRuntimeMapper) RemoveContainer(ctx context.Context, req *v1.Re
 
 	DebugLog(ctx, "RemoveContainer id %v", id)
 
+	var (
+		linkedVolumes string
+	)
+
 	id = *addPortoPrefix(ctx, &id)
+
+	if len(Cfg.Porto.ParentContainer) != 0 {
+		props, err := getProperties(ctx, id, []string{"volumes_linked"})
+		if err != nil {
+			return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+		}
+
+		linkedVolumes = props["volumes_linked"]
+	}
 	if err := pc.Destroy(id); err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
@@ -1623,6 +1686,14 @@ func (m *PortoshimRuntimeMapper) RemoveContainer(ctx context.Context, req *v1.Re
 	rootPath := getRootPath(id)
 	if err := os.RemoveAll(rootPath); err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+	}
+
+	if len(Cfg.Porto.ParentContainer) != 0 {
+		err := removeSpecificVolumes(ctx, id, linkedVolumes)
+		if err != nil {
+			DebugLog(ctx, "Failed to remove specific volumes %w", err)
+			return &v1.RemoveContainerResponse{}, err
+		}
 	}
 
 	return &v1.RemoveContainerResponse{}, nil

@@ -122,6 +122,7 @@ func TestPrepareContainerMounts(t *testing.T) {
 
 	ctx := context.Background()
 
+	waitPathes := make(map[string][]string, 0)
 	for ntest, test := range []struct {
 		name            string
 		mounts          []*v1.Mount
@@ -135,7 +136,7 @@ func TestPrepareContainerMounts(t *testing.T) {
 	} {
 		t.Logf("Test #%d", ntest)
 		volumes := &[]*pb.TVolumeSpec{}
-		prepareContainerMounts(ctx, "cnt1", volumes, test.mounts)
+		prepareContainerMounts(ctx, "cnt1", volumes, test.mounts, waitPathes)
 		// prepareContainerMounts adds additional path for logshim
 		if len(*volumes) != len(*test.expectedVolumes) {
 			t.Fatalf("result Volumes count %d %d", len(*volumes), len(*test.expectedVolumes))
