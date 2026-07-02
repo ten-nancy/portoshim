@@ -53,6 +53,17 @@ func (sr StreamingRuntime) Exec(_ context.Context, containerID string, cmd []str
 		Weak: getBoolPointer(true),
 	}
 
+	portoLabels, err := pc.GetProperty(portoContainerID, "labels")
+	if err != nil {
+		DebugLog(ctx, "Can not get property labels")
+		return fmt.Errorf("failed to get %v labels %w", portoContainerID, err)
+	}
+
+	labels, _ := convertFromPortoLabels(portoLabels)
+	if priv, ok := labels["priv"]; ok && priv == "true" {
+		containerSpec.Capabilities = &modCaps
+	}
+
 	// environment variables
 	env, err := pc.GetProperty(portoContainerID, "env")
 	if err != nil {

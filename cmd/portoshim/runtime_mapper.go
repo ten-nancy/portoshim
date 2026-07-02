@@ -36,6 +36,10 @@ const (
 	defaultIfName          = "veth0"
 	maxSymlinkResolveDepth = 10
 	defaultEnvPath         = "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+	privCntName            = "privileged"
+	portoStoppedState      = "stopped"
+	portoRunningState      = "running"
+	portoMetaState         = "meta"
 )
 
 var (
@@ -59,6 +63,9 @@ var (
 		"meta":       v1.ContainerState_CONTAINER_RUNNING,
 		"dead":       v1.ContainerState_CONTAINER_EXITED,
 	}
+
+	virtModeHost = "host"
+	virtModeApp  = "app"
 )
 
 var excludedMountSources = []string{"/dev", "/sys"}
@@ -174,6 +181,25 @@ func isPod(id, parentCnt string) bool {
 
 func isContainer(id, parentCnt string) bool {
 	return checkSlashCount(1, id, parentCnt)
+}
+
+// isPrivilegedContainer matches user containers nested under the porto-internal
+// "privileged" helper, i.e. paths shaped like .../pod/cnt/privileged.
+func isPrivilegedContainer(id string) bool {
+	parts := strings.Split(id, "/")
+	return len(parts) >= 3 && parts[len(parts)-1] == privCntName
+}
+
+// toContainerCriID hides the porto-internal "privileged" segment so kubelet
+// sees pod/cnt for both regular and privileged containers; generateFullContainerName
+// resolves the alias back to pod/cnt/privileged on subsequent calls.
+func toContainerCriID(id string) string {
+	if !isPrivilegedContainer(id) {
+		return id
+	}
+	parts := strings.Split(id, "/")
+	// Removes the last segment ("privileged") to expose only ".../pod/cnt"
+	return strings.Join(parts[:len(parts)-1], "/")
 }
 
 // state converters
@@ -383,11 +409,10 @@ func getRootPath(id string) string {
 	return filepath.Join(Cfg.Portoshim.VolumesDir, id)
 }
 
-func prepareRoot(ctx context.Context, spec *pb.TContainerSpec, volumes *[]*pb.TVolumeSpec, rootPath string, image string) error {
-	id := spec.GetName()
-	rootAbsPath := getRootPath(id)
-	if rootPath == "" {
-		rootPath = rootAbsPath
+func prepareDirs(ctx context.Context, id string, rootPath *string) error {
+	rootAbsPath := getRootPath(toContainerCriID(id))
+	if *rootPath == "" {
+		*rootPath = rootAbsPath
 	}
 
 	DebugLog(ctx, "mkdir: %s", rootAbsPath)
@@ -399,6 +424,25 @@ func prepareRoot(ctx context.Context, spec *pb.TContainerSpec, volumes *[]*pb.TV
 			return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 		}
 	}
+	return nil
+}
+
+func prepareRootForPrivCnt(ctx context.Context, spec *pb.TContainerSpec, rootPath string) error {
+	id := spec.GetName()
+	if err := prepareDirs(ctx, id, &rootPath); err != nil {
+		return err
+	}
+
+	spec.Root = &rootPath
+	return nil
+}
+
+func prepareRoot(ctx context.Context, spec *pb.TContainerSpec, volumes *[]*pb.TVolumeSpec, rootPath string, image string) error {
+	id := spec.GetName()
+	if err := prepareDirs(ctx, id, &rootPath); err != nil {
+		return err
+	}
+
 	root := pb.TVolumeSpec{
 		Links: []*pb.TVolumeLink{&pb.TVolumeLink{
 			Container: &id,
@@ -635,7 +679,7 @@ func prepareContainerLogs(ctx context.Context, containerSpec *pb.TContainerSpec)
 	return logPath, nil
 }
 
-func prepareContainerLabels(ctx context.Context, containerSpec *pb.TContainerSpec, cfg *v1.ContainerConfig, image, logPath string) {
+func prepareContainerLabels(ctx context.Context, containerSpec *pb.TContainerSpec, cfg *v1.ContainerConfig, image, logPath string, privCmds []string, privileged bool) {
 	id := containerSpec.GetName()
 	labels := cfg.GetLabels()
 	if labels == nil {
@@ -650,6 +694,16 @@ func prepareContainerLabels(ctx context.Context, containerSpec *pb.TContainerSpe
 	labels["io.kubernetes.container.logpath"] = logPath
 	labels["portoshim.container.id"] = id
 	labels["portoshim.container.image"] = image
+
+	if privileged {
+		labels["priv"] = "true"
+		data, err := json.Marshal(privCmds)
+		if err != nil {
+			DebugLog(ctx, "failed to marshal %v", privCmds)
+			return
+		}
+		labels["privCmd"] = string(data)
+	}
 
 	portoLabels := convertToPortoLabels(labels, cfg.GetAnnotations())
 	portoLabels["INFRA.engine"] = "k8s"
@@ -1127,7 +1181,7 @@ func addPortoPrefix(ctx context.Context, id *string) *string {
 	portoContainerName := getParentCnt(ctx)
 	var result string
 	if len(portoContainerName) != 0 {
-		result = filepath.Join(portoContainerName, *id)
+		result = strings.Join([]string{portoContainerName, *id}, "/")
 		// container name could not start with /
 		// See TContainer::ValidName
 		// https://github.com/ten-nancy/porto/blob/main/src/container.cpp#L106
@@ -1190,6 +1244,13 @@ func (m *PortoshimRuntimeMapper) RunPodSandbox(ctx context.Context, req *v1.RunP
 	// specs initialization for CreateFromSpec
 	podSpec := &pb.TContainerSpec{
 		Name: &portoid,
+		// We don't know what kind of containers will be launched.
+		// Since a child container's capabilities cannot exceed those of its parent,
+		// the parent must retain all capabilities necessary for a privileged container.
+		// For non-privileged containers, these capabilities will be unset.
+		// If a capability is not in the hierarchy, it will not be set for processes
+		// in child containers, even if it was explicitly set for the specific container.
+		Capabilities: &modCaps,
 	}
 	volumes := &[]*pb.TVolumeSpec{}
 
@@ -1463,11 +1524,12 @@ func (m *PortoshimRuntimeMapper) CreateContainer(ctx context.Context, req *v1.Cr
 	DebugLog(ctx, "CreateContainer: podID %s, %s", podID, req.PodSandboxId)
 	podID = *addPortoPrefix(ctx, &podID)
 	containerID := createID(req.GetConfig().GetMetadata().GetName())
-	id := filepath.Join(podID, containerID)
+	privileged := req.GetSandboxConfig().GetLinux().GetSecurityContext().GetPrivileged()
+	pc := getPortoClient(ctx)
+	id := strings.Join([]string{podID, containerID}, "/")
 	DebugLog(ctx, "CreateContainer: containerID %s", containerID)
 	DebugLog(ctx, "CreateContainer: id %s", id)
 	imageName := req.GetConfig().GetImage().GetImage()
-	pc := getPortoClient(ctx)
 
 	// get image
 	DebugLog(ctx, "check image: %s", imageName)
@@ -1479,6 +1541,19 @@ func (m *PortoshimRuntimeMapper) CreateContainer(ctx context.Context, req *v1.Cr
 	// specs initialization for CreateFromSpec
 	containerSpec := &pb.TContainerSpec{
 		Name: &id,
+	}
+
+	if privileged {
+		sandboxToPriv := pb.TContainerBindMounts{
+			Bind: []*pb.TContainerBindMount{{
+				Source: getStringPointer("/"),
+				Target: getStringPointer(sandboxInPriv),
+			}},
+		}
+		containerSpec.Bind = &sandboxToPriv
+		containerSpec.Capabilities = &modCaps
+	} else {
+		containerSpec.Capabilities = &rmModCaps
 	}
 	volumes := &[]*pb.TVolumeSpec{}
 
@@ -1500,8 +1575,6 @@ func (m *PortoshimRuntimeMapper) CreateContainer(ctx context.Context, req *v1.Cr
 	if logPath, err = prepareContainerLogs(ctx, containerSpec); err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
-
-	prepareContainerLabels(ctx, containerSpec, req.GetConfig(), *image.Id, logPath)
 
 	// resolv.conf
 	DebugLog(ctx, "prepare resolv.conf: %+v", req.GetSandboxConfig().GetDnsConfig())
@@ -1556,7 +1629,7 @@ func (m *PortoshimRuntimeMapper) CreateContainer(ctx context.Context, req *v1.Cr
 
 	// spec for UpdateFromSpec for sandbox container
 	devicesExplicitValue := true
-	portoSandboxId := addPortoPrefix(ctx, &req.PodSandboxId)
+	portoSandboxId := generateFullContainerName(ctx, &req.PodSandboxId)
 	sandboxUpdateSpec := &pb.TContainerSpec{
 		Name:            portoSandboxId,
 		Devices:         containerSpec.Devices,
@@ -1593,10 +1666,29 @@ func (m *PortoshimRuntimeMapper) CreateContainer(ctx context.Context, req *v1.Cr
 		req.GetConfig().GetArgs(),
 		image.GetConfig().GetCmd(),
 	)
-	if err = prepareCommand(ctx, containerSpec, req.GetConfig().GetCommand(), req.GetConfig().GetArgs(), image.GetConfig().GetCmd(), false); err != nil {
-		_ = pc.Destroy(id)
-		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+	if privileged {
+		containerSpec.CommandArgv = &pb.TContainerCommandArgv{
+			Argv: []string{getSandboxCommand(ctx, podID, pc)},
+		}
+
+	} else {
+		if err = prepareCommand(ctx, containerSpec, req.GetConfig().GetCommand(), req.GetConfig().GetArgs(), image.GetConfig().GetCmd(), false); err != nil {
+			_ = pc.Destroy(id)
+			return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+		}
 	}
+
+	var privCmds []string
+	if privileged {
+		ctSpec := &pb.TContainerSpec{}
+		if err = prepareCommand(ctx, ctSpec, req.GetConfig().GetCommand(), req.GetConfig().GetArgs(), image.GetConfig().GetCmd(), false); err != nil {
+			WarnLog(ctx, "Failed to prepare privileged command %v", err)
+		} else {
+			privCmds = ctSpec.CommandArgv.Argv
+		}
+	}
+
+	prepareContainerLabels(ctx, containerSpec, req.GetConfig(), *image.Id, logPath, privCmds, privileged)
 
 	// set command and environment variables
 	DebugLog(ctx, "update container from spec: %+v", id)
@@ -1606,7 +1698,7 @@ func (m *PortoshimRuntimeMapper) CreateContainer(ctx context.Context, req *v1.Cr
 	}
 
 	return &v1.CreateContainerResponse{
-		ContainerId: removePortoPrefix(ctx, id),
+		ContainerId: toContainerCriID(removePortoPrefix(ctx, id)),
 	}, nil
 }
 
@@ -1620,9 +1712,41 @@ func (m *PortoshimRuntimeMapper) StartContainer(ctx context.Context, req *v1.Sta
 	}
 
 	DebugLog(ctx, "StartContainer id %+v", id)
-	id = *addPortoPrefix(ctx, &id)
+	id = *generateFullContainerName(ctx, &id)
+
 	if err := pc.Start(id); err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+	}
+
+	rootPid, err := pc.GetProperty(id, "root_pid")
+	if err != nil {
+		WarnLog(ctx, "Failed to get root_pid property%s: %v", getCurrentFuncName(), err)
+	}
+	rPid, err := strconv.Atoi(rootPid)
+	if err != nil {
+		WarnLog(ctx, "Failed to parse root_pid%s: %v", getCurrentFuncName(), err)
+	}
+
+	if err := remountProcSys(ctx, rPid); err != nil {
+		WarnLog(ctx, "Unable to remount /proc/sys error: %v\n", err)
+	}
+
+	portoLabels, err := pc.GetProperty(id, "labels")
+	if err != nil {
+		DebugLog(ctx, "Can not get property labels")
+		return &v1.StartContainerResponse{}, nil
+	}
+
+	labels, _ := convertFromPortoLabels(portoLabels)
+	if priv, ok := labels["priv"]; ok && priv == "true" {
+		var cmds []string
+		err := json.Unmarshal([]byte(labels["privCmd"]), &cmds)
+		if err != nil {
+			DebugLog(ctx, "Failed to unmarshal %v", labels["privCmd"])
+		}
+		if err = createPrivCnt(ctx, id, cmds, pc); err != nil {
+			return nil, fmt.Errorf("%s: failed to create or configure privileged container %v", getCurrentFuncName(), err)
+		}
 	}
 
 	return &v1.StartContainerResponse{}, nil
@@ -1638,7 +1762,7 @@ func (m *PortoshimRuntimeMapper) StopContainer(ctx context.Context, req *v1.Stop
 	}
 
 	DebugLog(ctx, "StopContainer id %v", id)
-	id = *addPortoPrefix(ctx, &id)
+	id = *generateFullContainerName(ctx, &id)
 	// container existing
 	state, err := pc.GetProperty(id, "state")
 	if err != nil {
@@ -1724,7 +1848,7 @@ func (m *PortoshimRuntimeMapper) ListContainers(ctx context.Context, req *v1.Lis
 	parentCnt := getParentCnt(ctx)
 	for _, portoid := range response {
 		// skip containers with level = 1
-		if !isContainer(portoid, parentCnt) {
+		if !isContainer(portoid, parentCnt) && !isPrivilegedContainer(portoid) {
 			DebugLog(ctx, "skip %s as not a container, parent: %v", portoid, parentCnt)
 			continue
 		}
@@ -1766,7 +1890,7 @@ func (m *PortoshimRuntimeMapper) ListContainers(ctx context.Context, req *v1.Lis
 		image := getContainerImage(ctx, portoid, labels)
 
 		containers = append(containers, &v1.Container{
-			Id:           removePortoPrefix(ctx, portoid),
+			Id:           toContainerCriID(removePortoPrefix(ctx, portoid)),
 			PodSandboxId: podID,
 			Metadata:     convertContainerMetadata(labels),
 			Image: &v1.ImageSpec{
@@ -1785,6 +1909,21 @@ func (m *PortoshimRuntimeMapper) ListContainers(ctx context.Context, req *v1.Lis
 	}, nil
 }
 
+func generateFullContainerName(ctx context.Context, id *string) *string {
+	pc := getPortoClient(ctx)
+	portoid := addPortoPrefix(ctx, id)
+	if _, err := pc.GetProperty(*portoid, "state"); err == nil {
+		return portoid
+	}
+	// Privileged container doesn't make sense in nested use case (when parent container is
+	// configured), so addPortoPrefix is not applied here.
+	privID := strings.Join([]string{filepath.Dir(*id), filepath.Base(*id), privCntName}, "/")
+	if _, err := pc.GetProperty(privID, "state"); err == nil {
+		return &privID
+	}
+	return portoid
+}
+
 func (m *PortoshimRuntimeMapper) ContainerStatus(ctx context.Context, req *v1.ContainerStatusRequest) (*v1.ContainerStatusResponse, error) {
 	id := req.GetContainerId()
 	parentCnt := getParentCnt(ctx)
@@ -1792,7 +1931,7 @@ func (m *PortoshimRuntimeMapper) ContainerStatus(ctx context.Context, req *v1.Co
 		return nil, fmt.Errorf("%s: specified ID belongs to pod", getCurrentFuncName())
 	}
 
-	portoid := *addPortoPrefix(ctx, &id)
+	portoid := *generateFullContainerName(ctx, &id)
 	props, err := getProperties(ctx, portoid, []string{"labels", "state", "creation_time[raw]", "start_time[raw]", "death_time[raw]", "exit_code"})
 	if err != nil {
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
@@ -1836,7 +1975,7 @@ func (m *PortoshimRuntimeMapper) ExecSync(ctx context.Context, req *v1.ExecSyncR
 	containerID := req.GetContainerId()
 	DebugLog(ctx, "ExecSync containerID %v", containerID)
 	portoContainerID := *addPortoPrefix(ctx, &containerID)
-	id := filepath.Join(portoContainerID, createID("exec-sync"))
+	id := strings.Join([]string{portoContainerID, createID("exec-sync")}, "/")
 
 	// spec initialization for CreateFromSpec
 	containerSpec := &pb.TContainerSpec{
@@ -1920,7 +2059,7 @@ func (m *PortoshimRuntimeMapper) ContainerStats(ctx context.Context, req *v1.Con
 		return nil, fmt.Errorf("%s: specified ID belongs to pod", getCurrentFuncName())
 	}
 	DebugLog(ctx, "ContainerStats id %v", id)
-	portoid := *addPortoPrefix(ctx, &id)
+	portoid := *generateFullContainerName(ctx, &id)
 
 	return &v1.ContainerStatsResponse{
 		Stats: getContainerStats(ctx, id, portoid),
