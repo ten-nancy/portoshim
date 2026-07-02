@@ -16,13 +16,15 @@ const (
 	sandboxInPriv = "/sandbox_root"
 )
 
+var sysCaps = []string{"SYS_MODULE", "SYS_ADMIN"}
+
 var modCaps = pb.TCapabilities{
-	Cap:    []string{"SYS_MODULE", "SYS_ADMIN"},
+	Cap:    sysCaps,
 	Action: getBoolPointer(true),
 }
 
 var rmModCaps = pb.TCapabilities{
-	Cap:    []string{"SYS_MODULE", "SYS_ADMIN"},
+	Cap:    sysCaps,
 	Action: getBoolPointer(false),
 }
 
