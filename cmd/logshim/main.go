@@ -30,18 +30,29 @@ func syncWrite(mtx *sync.Mutex, w io.Writer, buf []byte) (int64, error) {
 }
 
 func streamLoop(mtx *sync.Mutex, w io.Writer, stream io.Reader, streamName string) {
-	scanner := bufio.NewScanner(stream)
+	reader := bufio.NewReaderSize(stream, 16*1024)
 	logLine := &logEnt{Stream: streamName}
-	for scanner.Scan() {
-		logLine.Log = scanner.Text() + "\n"
+
+	for {
+		chunk, readErr := reader.ReadSlice('\n')
+		if len(chunk) == 0 {
+			return
+		}
+		logLine.Log = string(chunk)
 		logLine.Time = time.Now()
-		buf, err := json.Marshal(&logLine)
+		buf, err := json.Marshal(logLine)
 		if err != nil {
 			log.Fatalf("failed to marshal json: %v", err)
 		}
 		_, err = syncWrite(mtx, w, buf)
 		if err != nil {
 			log.Fatalf("failed to write stream %s log: %v", streamName, err)
+		}
+		if readErr == io.EOF {
+			return
+		}
+		if readErr != nil && readErr != bufio.ErrBufferFull {
+			log.Fatalf("failed to read stream %s: %v", streamName, readErr)
 		}
 	}
 }
