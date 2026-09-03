@@ -1958,6 +1958,13 @@ func (m *PortoshimRuntimeMapper) ContainerStatus(ctx context.Context, req *v1.Co
 		},
 	}
 
+	if props["state"] == "dead" {
+		pc := getPortoClient(ctx)
+		if err := pc.Destroy(portoid); err != nil {
+			return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+		}
+	}
+
 	return resp, nil
 }
 
