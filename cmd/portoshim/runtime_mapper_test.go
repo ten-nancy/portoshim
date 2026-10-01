@@ -178,7 +178,12 @@ func TestRunPodSandbox(t *testing.T) {
 	fakePortoClient := porto.NewMockPortoAPI(ctrl)
 
 	fakePortoClient.EXPECT().Connect().Return(nil)
-	fakePortoClient.EXPECT().GetProperty(gomock.Any(), gomock.Any()).Return("", nil).AnyTimes()
+	fakePortoClient.EXPECT().GetProperty(gomock.Any(), gomock.Any()).DoAndReturn(func(id, property string) (string, error) {
+		if strings.HasSuffix(id, "/"+privCntName) {
+			return "", fmt.Errorf("container does not exist")
+		}
+		return "", nil
+	}).AnyTimes()
 	fakePortoClient.EXPECT().CreateFromSpec(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	fakePortoClient.EXPECT().Destroy(gomock.Any()).Return(nil).AnyTimes()
 	fakePortoClient.EXPECT().UpdateFromSpec(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
@@ -265,7 +270,12 @@ func TestCreateContainerAndListContainers(t *testing.T) {
 	fakePortoClient := porto.NewMockPortoAPI(ctrl)
 
 	fakePortoClient.EXPECT().Connect().Return(nil)
-	fakePortoClient.EXPECT().GetProperty(gomock.Any(), gomock.Any()).Return("", nil).AnyTimes()
+	fakePortoClient.EXPECT().GetProperty(gomock.Any(), gomock.Any()).DoAndReturn(func(id, property string) (string, error) {
+		if strings.HasSuffix(id, "/"+privCntName) {
+			return "", fmt.Errorf("container does not exist")
+		}
+		return "", nil
+	}).AnyTimes()
 	fakePortoClient.EXPECT().CreateFromSpec(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	fakePortoClient.EXPECT().UpdateFromSpec(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	fakePortoClient.EXPECT().Destroy(gomock.Any()).Return(nil).AnyTimes()
@@ -340,6 +350,10 @@ func TestCreateContainerAndListContainers(t *testing.T) {
 			SandboxConfig: sandboxCfg,
 		}
 
+		createReq.Config.Linux = &v1.LinuxContainerConfig{
+			SecurityContext: &v1.LinuxContainerSecurityContext{Privileged: test.privileged},
+		}
+
 		createResp, err := rm.CreateContainer(ctx, createReq)
 		if err != nil {
 			t.Fatalf("[%s] Failed to CreateContainer: %v", test.name, err)
@@ -357,28 +371,19 @@ func TestCreateContainerAndListContainers(t *testing.T) {
 			encodeLabel("portoshim.container.image", "LABEL"),
 			encodeLabel(imageName, ""),
 		)
-		labelsVar := "labels"
-		stateVar := "state"
-		creationTimeVar := "creation_time[raw]"
-		stateVal := "running"
-		creationTimeVal := "1700000000"
-		respName := createdID
-
-		getResp := &pb.TGetResponse{
-			List: []*pb.TGetResponse_TContainerGetListResponse{
-				{
-					Name: &respName,
-					Keyval: []*pb.TGetResponse_TContainerGetValueResponse{
-						{Variable: &labelsVar, Value: &portoLabels},
-						{Variable: &stateVar, Value: &stateVal},
-						{Variable: &creationTimeVar, Value: &creationTimeVal},
-					},
-				},
-			},
+		ids := []string{createdID}
+		properties := map[string]map[string]string{
+			createdID: {"labels": portoLabels, "state": "running", "creation_time[raw]": "1700000000"},
+		}
+		if test.privileged {
+			properties[createdID]["labels"] += ";" + encodeLabel("priv", "LABEL") + ":" + encodeLabel("true", "")
+			child := createdID + "/" + privCntName
+			ids = append(ids, child)
+			properties[child] = map[string]string{"state": "running", "creation_time[raw]": "1700000000"}
 		}
 
-		fakePortoClient.EXPECT().ListContainers("").Return([]string{createdID}, nil)
-		fakePortoClient.EXPECT().Get([]string{createdID}, gomock.Any()).Return(getResp, nil)
+		fakePortoClient.EXPECT().ListContainers("").Return(ids, nil)
+		fakePortoClient.EXPECT().GetProperties(ids, []string{"labels", "state", "creation_time[raw]"}).Return(properties, nil)
 
 		listResp, err := rm.ListContainers(ctx, &v1.ListContainersRequest{})
 		if err != nil {
@@ -419,7 +424,12 @@ func TestContainerStatus(t *testing.T) {
 	fakePortoClient := porto.NewMockPortoAPI(ctrl)
 
 	fakePortoClient.EXPECT().Connect().Return(nil)
-	fakePortoClient.EXPECT().GetProperty(gomock.Any(), gomock.Any()).Return("", nil).AnyTimes()
+	fakePortoClient.EXPECT().GetProperty(gomock.Any(), gomock.Any()).DoAndReturn(func(id, property string) (string, error) {
+		if strings.HasSuffix(id, "/"+privCntName) {
+			return "", fmt.Errorf("container does not exist")
+		}
+		return "", nil
+	}).AnyTimes()
 	fakePortoClient.EXPECT().CreateFromSpec(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	fakePortoClient.EXPECT().UpdateFromSpec(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
@@ -603,5 +613,97 @@ func TestContainerStatus(t *testing.T) {
 	// A pod ID (no container part) must be rejected without touching porto.
 	if _, err := rm.ContainerStatus(ctx, &v1.ContainerStatusRequest{ContainerId: "testpod1"}); err == nil {
 		t.Fatalf("ContainerStatus accepted a pod ID, expected an error")
+	}
+}
+
+func TestPrivilegedContainerLifecycle(t *testing.T) {
+	for _, state := range []string{"running", "dead"} {
+		t.Run(state, func(t *testing.T) {
+			initFakeConfig(t)
+			Cfg.Porto.ParentContainer = ""
+			ctrl := gomock.NewController(t)
+			pc := porto.NewMockPortoAPI(ctrl)
+			//nolint:sa1029
+			ctx := context.WithValue(context.Background(), "portoClient", pc)
+			//nolint:sa1029
+			ctx = context.WithValue(ctx, "requestId", "test")
+			const id = "pod/init"
+			const child = id + "/privileged"
+			pairs := []string{}
+			for k, v := range convertToPortoLabels(map[string]string{
+				"priv": "true", "portoshim.container.id": id,
+				"portoshim.container.image": "image", "io.kubernetes.container.name": "init",
+				"io.kubernetes.container.logpath": "/logs/init", "attempt": "0",
+			}, nil) {
+				pairs = append(pairs, k+":"+v)
+			}
+			parentProps := map[string]string{"labels": strings.Join(pairs, ";"), "state": "running", "creation_time[raw]": "10"}
+			childProps := map[string]string{"state": state, "creation_time[raw]": "11", "start_time[raw]": "12", "death_time[raw]": "22", "exit_code": "0"}
+			pc.EXPECT().GetProperty(child, "state").Return(state, nil).Times(1)
+			pc.EXPECT().GetProperty("", "absolute_name").Return("", nil).AnyTimes()
+			pc.EXPECT().GetProperties([]string{"pod", id, child}, []string{"labels", "state", "creation_time[raw]"}).Return(map[string]map[string]string{
+				"pod": {},
+				id:    parentProps,
+				child: childProps,
+			}, nil).Times(2)
+			pc.EXPECT().GetProperties([]string{id, child}, []string{"labels", "state", "creation_time[raw]"}).Return(map[string]map[string]string{
+				id:    parentProps,
+				child: childProps,
+			}, nil).Times(1)
+			pc.EXPECT().Get(gomock.Any(), gomock.Any()).DoAndReturn(func(ids, names []string) (*pb.TGetResponse, error) {
+				result := &pb.TGetResponse{}
+				for _, containerID := range ids {
+					props := parentProps
+					if containerID == child {
+						props = childProps
+					} else if containerID != id {
+						t.Fatalf("unexpected container %s", containerID)
+					}
+					values := []*pb.TGetResponse_TContainerGetValueResponse{}
+					for _, key := range names {
+						values = append(values, &pb.TGetResponse_TContainerGetValueResponse{Variable: getStringPointer(key), Value: getStringPointer(props[key])})
+					}
+					result.List = append(result.List, &pb.TGetResponse_TContainerGetListResponse{Name: getStringPointer(containerID), Keyval: values})
+				}
+				return result, nil
+			}).Times(2) // Child status and parent metadata.
+
+			pc.EXPECT().ListContainers("").Return([]string{"pod", id, child}, nil).Times(2)
+			pc.EXPECT().ListContainers("pod/***").Return([]string{id, child, "pod/other", "pod/other/privileged"}, nil).Times(1)
+			mapper := &PortoshimRuntimeMapper{}
+			want := v1.ContainerState_CONTAINER_RUNNING
+			if state == "dead" {
+				want = v1.ContainerState_CONTAINER_EXITED
+				pc.EXPECT().Destroy(id).Return(nil)
+			}
+			listed, err := mapper.ListContainers(ctx, &v1.ListContainersRequest{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(listed.Containers) != 1 || listed.Containers[0].Id != id || listed.Containers[0].State != want {
+				t.Fatalf("incorrect listing: %v", listed)
+			}
+			filtered, err := mapper.ListContainers(ctx, &v1.ListContainersRequest{Filter: &v1.ContainerFilter{State: &v1.ContainerStateValue{State: v1.ContainerState_CONTAINER_EXITED}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (len(filtered.Containers) == 1) != (state == "dead") {
+				t.Fatalf("incorrect state filter: %v", filtered)
+			}
+			byID, err := mapper.ListContainers(ctx, &v1.ListContainersRequest{Filter: &v1.ContainerFilter{Id: id}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(byID.Containers) != 1 || byID.Containers[0].State != want {
+				t.Errorf("incorrect ID filter: %v", byID)
+			}
+			status, err := mapper.ContainerStatus(ctx, &v1.ContainerStatusRequest{ContainerId: id})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.Status.Id != id || status.Status.State != want || status.Status.Metadata.Name != "init" || status.Status.LogPath != "/logs/init" || status.Status.StartedAt != convertValueToTime("12") {
+				t.Fatalf("incorrect status: %v", status)
+			}
+		})
 	}
 }
