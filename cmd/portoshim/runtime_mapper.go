@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	intr "math/rand"
 	"os"
@@ -1354,6 +1355,50 @@ func (m *PortoshimRuntimeMapper) StopPodSandbox(ctx context.Context, req *v1.Sto
 	return &v1.StopPodSandboxResponse{}, nil
 }
 
+func prepareSandboxConfig(pc porto.PortoAPI, portoid string) (*v1.PodSandboxConfig, error) {
+	labels, err := pc.GetProperty(portoid, "labels")
+	if err != nil {
+		return nil, err
+	}
+	podLabels, annotations := convertFromPortoLabels(labels)
+	return &v1.PodSandboxConfig{
+		Metadata:    convertPodMetadata(podLabels),
+		Annotations: annotations,
+	}, nil
+}
+
+func (m *PortoshimRuntimeMapper) removeNetNS(ctx context.Context, id, netnsProp string, config *v1.PodSandboxConfig) error {
+	// Reload the current configuration so DEL also works after a runtime restart.
+	var opts []cni.Opt
+	if len(Cfg.Porto.ParentContainer) == 0 || Cfg.CNI.NetType == "netns" {
+		opts = append(opts, cni.WithLoNetwork)
+	}
+	opts = append(opts, cni.WithDefaultConf)
+	if err := m.netPlugin.Load(opts...); err != nil {
+		return fmt.Errorf("failed to load cni configuration: %w", err)
+	}
+	netnsPath := netns.LoadNetNS(filepath.Join(Cfg.CNI.NetnsDir, netnsProp))
+	closed, err := netnsPath.Closed()
+	if err != nil {
+		return err
+	}
+	path := netnsPath.GetPath()
+	if closed {
+		path = ""
+	}
+	traceNetworks(ctx, m.netPlugin.GetConfig().Networks)
+	if err := m.netPlugin.Remove(ctx, id, path,
+		cni.WithLabels(convertToCNILabels(id, config)),
+		cni.WithCapability("io.kubernetes.cri.pod-annotations", config.Annotations),
+	); err != nil {
+		return fmt.Errorf("%s: %w", getCurrentFuncName(), err)
+	}
+	if err := netnsPath.Remove(); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (m *PortoshimRuntimeMapper) RemovePodSandbox(ctx context.Context, req *v1.RemovePodSandboxRequest) (*v1.RemovePodSandboxResponse, error) {
 	pc := getPortoClient(ctx)
 
@@ -1368,29 +1413,38 @@ func (m *PortoshimRuntimeMapper) RemovePodSandbox(ctx context.Context, req *v1.R
 
 	netProp, err := pc.GetProperty(portoid, "net")
 	if err != nil {
-		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+		var portoErr *porto.PortoError
+		if errors.As(err, &portoErr) && portoErr.Code == pb.EError_ContainerDoesNotExist {
+			return &v1.RemovePodSandboxResponse{}, nil
+		}
+		return nil, fmt.Errorf("%s: %w", getCurrentFuncName(), err)
+	}
+
+	netnsProp := parsePropertiesNetNS(netProp, "netns")
+	config := &v1.PodSandboxConfig{}
+	if netnsProp != "" {
+		config, err = prepareSandboxConfig(pc, portoid)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Remove is forceful; keep the sandbox and its metadata until CNI DEL succeeds.
+	if err := pc.StopTimeout(portoid, 0); err != nil {
+		return nil, err
+	}
+
+	if netnsProp != "" {
+		if err := m.removeNetNS(ctx, id, netnsProp, config); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := pc.Destroy(portoid); err != nil {
-		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+		return nil, err
 	}
-
-	rootPath := getRootPath(portoid)
-	if err := os.RemoveAll(rootPath); err != nil {
-		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-	}
-
-	// removes the network from the pod
-	netnsProp := parsePropertiesNetNS(netProp, "netns")
-	if netnsProp != "" {
-		netnsPath := netns.LoadNetNS(filepath.Join(Cfg.CNI.NetnsDir, netnsProp))
-		traceNetworks(ctx, m.netPlugin.GetConfig().Networks)
-		if err := m.netPlugin.Remove(ctx, id, netnsPath.GetPath(), cni.WithLabels(map[string]string{})); err != nil {
-			return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-		}
-		if err := netnsPath.Remove(); err != nil {
-			return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
-		}
+	if err := os.RemoveAll(getRootPath(portoid)); err != nil {
+		return nil, err
 	}
 
 	return &v1.RemovePodSandboxResponse{}, nil
