@@ -154,6 +154,66 @@ func TestPrepareContainerMounts(t *testing.T) {
 	}
 }
 
+func TestPrepareContainerMountsSystemPaths(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		hostPath      string
+		containerPath string
+		readOnly      bool
+		wantStorage   string
+		wantTarget    string
+	}{
+		{"nfd host sysfs", "/sys", "/host-sys", true, "/sys", "/host-sys"},
+		{"normalized host sysfs", "/sys/", "/host-sys/", true, "/sys", "/host-sys"},
+		{"writable host sysfs", "/sys", "/host-sys", false, "/sys", "/host-sys"},
+		{"native sysfs", "/sys", "/sys", true, "", ""},
+		{"normalized native sysfs", "/sys/", "/host-sys/../sys/", true, "", ""},
+		{"other source over sysfs", "/srv/data", "/sys", false, "", ""},
+		{"native sysfs subtree", "/sys", "/sys/host", true, "/sys", "/sys/host"},
+		{"host devices", "/dev", "/host-dev", true, "/dev", "/host-dev"},
+		{"writable host devices", "/dev", "/host-dev", false, "/dev", "/host-dev"},
+		{"native devices", "/dev", "/dev", false, "", ""},
+		{"other source over devices", "/srv/data", "/dev", true, "", ""},
+		{"normalized native devices", "/srv/data", "/host-dev/../dev/", false, "", ""},
+		{"shared memory", "/run/shm", "/dev/shm", false, "/run/shm", "/dev/shm"},
+		{"individual device", "/dev/null", "/dev/null", false, "/dev/null", "/dev/null"},
+		{"existing sysfs subdirectory", "/sys/devices", "/host-devices", true, "/sys/devices", "/host-devices"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			volumes := []*pb.TVolumeSpec{}
+			prepareContainerMounts(context.Background(), "pod/worker", &volumes, []*v1.Mount{{
+				HostPath:      test.hostPath,
+				ContainerPath: test.containerPath,
+				Readonly:      test.readOnly,
+			}}, nil)
+
+			var hostVolume *pb.TVolumeSpec
+			for _, volume := range volumes {
+				if volume.GetStorage() != "/usr/sbin/logshim" {
+					if hostVolume != nil {
+						t.Fatalf("unexpected extra host volume: %v", volume)
+					}
+					hostVolume = volume
+				}
+			}
+			wantMount := test.wantStorage != ""
+			if (hostVolume != nil) != wantMount {
+				t.Fatalf("host mount present = %t, want %t", hostVolume != nil, wantMount)
+			}
+			if hostVolume == nil {
+				return
+			}
+			if hostVolume.GetStorage() != test.wantStorage || hostVolume.GetBackend() != "bind" || hostVolume.GetReadOnly() != test.readOnly {
+				t.Fatalf("incorrect host volume: %v", hostVolume)
+			}
+			if len(hostVolume.Links) != 1 || hostVolume.Links[0].GetContainer() != "pod/worker" ||
+				hostVolume.Links[0].GetTarget() != test.wantTarget || hostVolume.Links[0].GetReadOnly() != test.readOnly {
+				t.Fatalf("incorrect host volume links: %v", hostVolume.Links)
+			}
+		})
+	}
+}
+
 // RuntimeMapper
 
 func NewFakePortoshimRuntimeMapper() (*PortoshimRuntimeMapper, error) {

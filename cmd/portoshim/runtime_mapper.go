@@ -69,7 +69,7 @@ var (
 	virtModeApp  = "app"
 )
 
-var excludedMountSources = []string{"/dev", "/sys"}
+var excludedMountTargets = []string{"/dev", "/sys"}
 
 type PortoshimRuntimeMapper struct {
 	netPlugin       cni.CNI
@@ -487,7 +487,8 @@ func prepareContainerMounts(ctx context.Context, id string, volumes *[]*pb.TVolu
 		// pre-normalize volume path for porto as it expects "normal" path
 		mount.ContainerPath = filepath.Clean(mount.ContainerPath)
 		mount.HostPath = filepath.Clean(mount.HostPath)
-		if sliceContainsString(excludedMountSources, mount.HostPath) {
+		// Preserve Porto-managed roots while allowing mounts at other paths.
+		if sliceContainsString(excludedMountTargets, mount.ContainerPath) {
 			continue
 		}
 
