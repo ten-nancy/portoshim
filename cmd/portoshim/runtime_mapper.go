@@ -347,8 +347,10 @@ func prepareCommand(ctx context.Context, spec *pb.TContainerSpec, cfgCmd, cfgArg
 		if execPath != "" {
 			cmd[0] = execPath
 		} else {
-			// Last resort, we failed to find out command, so let sh decide.
-			cmd = append([]string{"/bin/sh", "-c"}, strings.Join(cmd, " "))
+			// Last resort, we failed to find out command, so let sh look it up.
+			// "$0" "$@" keeps the arguments as they are: joining them into one
+			// string would lose their boundaries and quoting.
+			cmd = append([]string{"/bin/sh", "-c", `exec "$0" "$@"`}, cmd...)
 		}
 	}
 
@@ -1744,7 +1746,12 @@ func (m *PortoshimRuntimeMapper) CreateContainer(ctx context.Context, req *v1.Cr
 
 	var privCmds []string
 	if privileged {
-		ctSpec := &pb.TContainerSpec{}
+		// The command is resolved in the container root with the container
+		// PATH, as for the regular containers.
+		ctSpec := &pb.TContainerSpec{
+			Name: &id,
+			Env:  containerSpec.Env,
+		}
 		if err = prepareCommand(ctx, ctSpec, req.GetConfig().GetCommand(), req.GetConfig().GetArgs(), image.GetConfig().GetCmd(), false); err != nil {
 			WarnLog(ctx, "Failed to prepare privileged command %v", err)
 		} else {

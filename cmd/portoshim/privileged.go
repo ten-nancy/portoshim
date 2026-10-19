@@ -111,6 +111,7 @@ func enterNsAndRemountProcSys(pid int) error {
 }
 
 func createPrivCnt(ctx context.Context, id string, cmds []string, pc porto.PortoAPI) error {
+	parent := id
 	id = filepath.Join(id, privCntName)
 
 	privCntSpec := &pb.TContainerSpec{
@@ -138,6 +139,16 @@ func createPrivCnt(ctx context.Context, id string, cmds []string, pc porto.Porto
 	if err := pc.CreateFromSpec(privCntSpec, *volumes, false); err != nil {
 		DebugLog(ctx, "Failed to CreateFromSpec privileged container %v", err)
 		return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+	}
+
+	// Porto does not pass the environment to a child container, and the
+	// container environment is set on the parent.
+	env, err := pc.GetProperty(parent, "env")
+	if err != nil {
+		return fmt.Errorf("%s: get env of %s: %v", getCurrentFuncName(), parent, err)
+	}
+	if err := pc.SetProperty(id, "env", env); err != nil {
+		return fmt.Errorf("%s: set env of %s: %v", getCurrentFuncName(), id, err)
 	}
 
 	if err := pc.UpdateFromSpec(privCntSpec, true); err != nil {

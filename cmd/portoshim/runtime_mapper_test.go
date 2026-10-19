@@ -767,3 +767,43 @@ func TestPrivilegedContainerLifecycle(t *testing.T) {
 		})
 	}
 }
+
+func TestPrepareCommandShellFallbackKeepsArguments(t *testing.T) {
+	initFakeConfig(t)
+	name := "pod/missing-root"
+	spec := &pb.TContainerSpec{Name: &name}
+	script := "echo 'a b'; source /config/script.sh"
+	//nolint:sa1029
+	ctx := context.WithValue(context.Background(), "requestId", "test")
+
+	if err := prepareCommand(ctx, spec, []string{"bash", "-xc", script}, nil, nil, true); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"/bin/sh", "-c", `exec "$0" "$@"`, "bash", "-xc", script}
+	if got := spec.GetCommandArgv().GetArgv(); strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("argv %q, want %q", got, want)
+	}
+}
+
+func TestCreatePrivCntCopiesParentEnv(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	pc := porto.NewMockPortoAPI(ctrl)
+	//nolint:sa1029
+	ctx := context.WithValue(context.Background(), "requestId", "test")
+	const parent = "pod/init"
+	const child = parent + "/privileged"
+	env := "K8S_POD_NAME=end-0;PATH=/usr/bin:/bin"
+
+	gomock.InOrder(
+		pc.EXPECT().GetProperty(child, "state").Return("", nil),
+		pc.EXPECT().CreateFromSpec(gomock.Any(), gomock.Any(), false).Return(nil),
+		pc.EXPECT().GetProperty(parent, "env").Return(env, nil),
+		pc.EXPECT().SetProperty(child, "env", env).Return(nil),
+		pc.EXPECT().UpdateFromSpec(gomock.Any(), true).Return(nil),
+	)
+
+	if err := createPrivCnt(ctx, parent, []string{"/bin/true"}, pc); err != nil {
+		t.Fatal(err)
+	}
+}
