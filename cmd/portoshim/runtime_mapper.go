@@ -2195,7 +2195,18 @@ func (m *PortoshimRuntimeMapper) Attach(ctx context.Context, req *v1.AttachReque
 }
 
 func (m *PortoshimRuntimeMapper) PortForward(ctx context.Context, req *v1.PortForwardRequest) (*v1.PortForwardResponse, error) {
-	return nil, fmt.Errorf("not implemented PortForward")
+	DebugLog(ctx, "PortForward")
+	id := req.GetPodSandboxId()
+	if !isPod(id, getParentCnt(ctx)) {
+		return nil, fmt.Errorf("%s: %q is not a pod sandbox ID", getCurrentFuncName(), id)
+	}
+
+	resp, err := m.streamingServer.GetPortForward(req)
+	if err != nil {
+		return nil, fmt.Errorf("unable to prepare port forward endpoint: %v", err)
+	}
+
+	return resp, nil
 }
 
 func (m *PortoshimRuntimeMapper) ContainerStats(ctx context.Context, req *v1.ContainerStatsRequest) (*v1.ContainerStatsResponse, error) {

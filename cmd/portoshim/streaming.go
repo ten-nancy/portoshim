@@ -14,17 +14,22 @@ import (
 	remotecommandconsts "k8s.io/apimachinery/pkg/util/remotecommand"
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/kubernetes/pkg/kubelet/cri/streaming"
+	"k8s.io/kubernetes/pkg/kubelet/cri/streaming/portforward"
 )
 
-func NewStreamingServer(addr string) (streaming.Server, error) {
-	config := streaming.Config{
+func newStreamingConfig(addr string) streaming.Config {
+	return streaming.Config{
 		Addr:                            addr,
 		StreamIdleTimeout:               15 * time.Minute,
 		StreamCreationTimeout:           remotecommandconsts.DefaultStreamCreationTimeout,
 		SupportedRemoteCommandProtocols: remotecommandconsts.SupportedStreamingProtocols,
+		SupportedPortForwardProtocols:   portforward.SupportedProtocols,
 	}
+}
+
+func NewStreamingServer(addr string) (streaming.Server, error) {
 	runtime, _ := NewStreamingRuntime()
-	return streaming.NewServer(config, runtime)
+	return streaming.NewServer(newStreamingConfig(addr), runtime)
 }
 
 func NewStreamingRuntime() (StreamingRuntime, error) {
@@ -205,5 +210,29 @@ func (sr StreamingRuntime) Attach(ctx context.Context, containerID string, in io
 	return nil
 }
 func (sr StreamingRuntime) PortForward(ctx context.Context, podSandboxID string, port int32, stream io.ReadWriteCloser) error {
-	return nil
+	defer stream.Close()
+
+	pctx, err := portoClientContext(ctx)
+	if err != nil {
+		return fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+	}
+
+	portoid := *addPortoPrefix(pctx, &podSandboxID)
+	DebugLog(pctx, "PortForward pod %v port %d", portoid, port)
+
+	// Resolve the netns and release the porto connection before streaming,
+	// which may last for the whole kubectl port-forward session.
+	nsPath, err := podNetNSPath(pctx, portoid)
+	_ = getPortoClient(pctx).Close()
+	if err != nil {
+		return fmt.Errorf("%s: %w", getCurrentFuncName(), err)
+	}
+
+	conn, err := dialInNetNS(nsPath, port)
+	if err != nil {
+		return fmt.Errorf("%s: pod %s port %d: %w", getCurrentFuncName(), podSandboxID, port, err)
+	}
+	defer conn.Close()
+
+	return copyPortForward(ctx, conn, stream)
 }
