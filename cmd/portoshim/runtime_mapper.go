@@ -1798,7 +1798,7 @@ func (m *PortoshimRuntimeMapper) StartContainer(ctx context.Context, req *v1.Sta
 		WarnLog(ctx, "Failed to parse root_pid%s: %v", getCurrentFuncName(), err)
 	}
 
-	if err := remountProcSys(ctx, rPid); err != nil {
+	if err := remountContainerPath(ctx, rPid, "/proc/sys"); err != nil {
 		WarnLog(ctx, "Unable to remount /proc/sys error: %v\n", err)
 	}
 
@@ -1810,6 +1810,9 @@ func (m *PortoshimRuntimeMapper) StartContainer(ctx context.Context, req *v1.Sta
 
 	labels, _ := convertFromPortoLabels(portoLabels)
 	if priv, ok := labels["priv"]; ok && priv == "true" {
+		if err := remountContainerPath(ctx, rPid, "/sys"); err != nil {
+			WarnLog(ctx, "Unable to remount /sys error: %v\n", err)
+		}
 		var cmds []string
 		err := json.Unmarshal([]byte(labels["privCmd"]), &cmds)
 		if err != nil {

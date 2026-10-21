@@ -2,11 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
+	"os"
 	"path"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	cni "github.com/containerd/go-cni"
 	"github.com/ten-nancy/porto/src/api/go/porto"
@@ -16,6 +21,146 @@ import (
 )
 
 const portoName = "ISS-AGENT--alexperevalov-portoshim-stage-48/box/ps-87378-0"
+
+// Opt-in real-Porto regression for the sysfs extension. The VM fixture only
+// reads mount flags; no sysfs attributes or network configuration are written.
+func TestPrivilegedSysfsRemount(t *testing.T) {
+	if os.Getenv("PORTOSHIM_TEST_SYSFS") != "1" {
+		t.Skip("requires a disposable root-capable Linux VM with portod")
+	}
+	for _, tc := range []struct{ privileged, chroot bool }{{false, false}, {true, false}, {true, true}} {
+		t.Run(fmt.Sprintf("privileged=%v/chroot=%v", tc.privileged, tc.chroot), func(t *testing.T) {
+			privileged := tc.privileged
+			initFakeConfig(t)
+			Cfg.Porto.ParentContainer = ""
+			pc, err := porto.Dial()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = pc.Close() })
+			pod := fmt.Sprintf("portoshim-sysfs-minimal-%d-%d", os.Getpid(), time.Now().UnixNano())
+			if err := pc.Create(pod); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := pc.Destroy(pod); err != nil {
+					t.Errorf("destroy test container %s: %v", pod, err)
+				}
+			})
+			configure := func(name string) {
+				t.Helper()
+				for _, property := range [][2]string{{"root", "/"}, {"net", "inherited"}, {"command", "/bin/sleep 300"}} {
+					if err := pc.SetProperty(name, property[0], property[1]); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			configure(pod)
+			if err := pc.Start(pod); err != nil {
+				t.Fatal(err)
+			}
+			id := pod + "/cnt"
+			if err := pc.Create(id); err != nil {
+				t.Fatal(err)
+			}
+			configure(id)
+			markerDir := t.TempDir()
+			marker := path.Join(markerDir, "sysfs-options")
+			applicationMarker := marker
+			if tc.chroot {
+				root := t.TempDir()
+				for _, dir := range []string{"bin", "lib", "lib64", "usr", "evidence"} {
+					if err := os.MkdirAll(path.Join(root, dir), 0755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := pc.SetProperty(id, "root", root); err != nil {
+					t.Fatal(err)
+				}
+				binds := fmt.Sprintf("/bin /bin ro; /lib /lib ro; /lib64 /lib64 ro; /usr /usr ro; %s /evidence rw", markerDir)
+				if err := pc.SetProperty(id, "bind", binds); err != nil {
+					t.Fatal(err)
+				}
+				applicationMarker = "/evidence/sysfs-options"
+			}
+			awk, err := filepath.EvalSymlinks("/usr/bin/awk")
+			if err != nil {
+				t.Fatal(err)
+			}
+			command := fmt.Sprintf("%q '$5 == \"/sys\" {print $6}' /proc/self/mountinfo > %q; exec /bin/sleep 300", awk, applicationMarker)
+			argv, err := json.Marshal([]string{"/bin/sh", "-c", command})
+			if err != nil {
+				t.Fatal(err)
+			}
+			labels := encodeLabel("privCmd", "LABEL") + ":" + encodeLabel(string(argv), "")
+			if privileged {
+				labels += ";" + encodeLabel("priv", "LABEL") + ":" + encodeLabel("true", "")
+			}
+			if err := pc.SetProperty(id, "labels", labels); err != nil {
+				t.Fatal(err)
+			}
+			hostBefore, err := os.ReadFile("/proc/1/mountinfo")
+			if err != nil {
+				t.Fatal(err)
+			}
+			//nolint:sa1029
+			ctx := context.WithValue(context.Background(), "portoClient", pc)
+			//nolint:sa1029
+			ctx = context.WithValue(ctx, "requestId", "minimal-sysfs-test")
+			mapper := &PortoshimRuntimeMapper{}
+			if _, err := mapper.StartContainer(ctx, &v1.StartContainerRequest{ContainerId: id}); err != nil {
+				t.Fatal(err)
+			}
+			pidText, err := pc.GetProperty(id, "root_pid")
+			if err != nil {
+				t.Fatal(err)
+			}
+			pid, err := strconv.Atoi(pidText)
+			if err != nil {
+				t.Fatal(err)
+			}
+			options := ""
+			deadline := time.Now().Add(5 * time.Second)
+			for options == "" {
+				var data []byte
+				if privileged {
+					data, _ = os.ReadFile(marker)
+					options = strings.TrimSpace(string(data))
+				} else {
+					data, err = os.ReadFile(fmt.Sprintf("/proc/%d/mountinfo", pid))
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, line := range strings.Split(string(data), "\n") {
+						fields := strings.Fields(line)
+						if len(fields) > 6 && fields[4] == "/sys" {
+							options = fields[5]
+						}
+					}
+				}
+				if time.Now().After(deadline) {
+					props, _ := pc.GetProperties([]string{id, id + "/privileged"}, []string{"state", "exit_code", "stdout", "stderr"})
+					t.Logf("fixture process diagnostics: %v", props)
+					t.Fatal("container did not report its sysfs mount")
+				}
+				if options == "" {
+					time.Sleep(20 * time.Millisecond)
+				}
+			}
+			if gotRW := strings.Split(options, ",")[0] == "rw"; gotRW != privileged {
+				t.Errorf("container sysfs options=%s; privileged=%v", options, privileged)
+			}
+			t.Logf("actual application sysfs options: %s", options)
+			hostAfter, err := os.ReadFile("/proc/1/mountinfo")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(hostAfter) != string(hostBefore) {
+				t.Fatal("host mounts changed")
+			}
+		})
+	}
+}
 
 // for portoAPI testing purpose
 func setCFG(t *testing.T) {

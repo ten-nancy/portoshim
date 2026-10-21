@@ -41,28 +41,28 @@ func getSandboxCommand(ctx context.Context, podID string, pc porto.PortoAPI) str
 	return sandboxCmd
 }
 
-// remountProcSys enters the target process's mount and PID namespaces via
-// setns(2) and remounts /proc/sys read-write using mount(2) directly. This
+// remountContainerPath enters the target process's mount and PID namespaces via
+// setns(2) and remounts the requested path read-write using mount(2) directly. This
 // avoids relying on the `nsenter`/`mount` binaries, which are not present in
 // every container image. Must run on the host with CAP_SYS_ADMIN.
-func remountProcSys(ctx context.Context, pid int) error {
+func remountContainerPath(ctx context.Context, pid int, target string) error {
 	// setns into a mount namespace mutates the calling thread irreversibly,
 	// so the work runs on a dedicated, locked OS thread. The thread is never
 	// unlocked; the Go runtime tears it down when the goroutine exits.
 	errCh := make(chan error, 1)
 	go func() {
 		runtime.LockOSThread()
-		errCh <- enterNsAndRemountProcSys(pid)
+		errCh <- enterNsAndRemountPath(pid, target)
 	}()
 	if err := <-errCh; err != nil {
 		return err
 	}
 
-	DebugLog(ctx, "Successfully remounted /proc/sys to RW for PID %d\n", pid)
+	DebugLog(ctx, "Successfully remounted %s to RW for PID %d\n", target, pid)
 	return nil
 }
 
-func enterNsAndRemountProcSys(pid int) error {
+func enterNsAndRemountPath(pid int, target string) error {
 	// Open the target's namespace handles. Order matters: PID namespace must
 	// be entered before the mount namespace, because once we are inside the
 	// target mount namespace we may no longer be able to open files under the
@@ -101,11 +101,11 @@ func enterNsAndRemountProcSys(pid int) error {
 		return fmt.Errorf("setns mnt (pid=%d): %w", pid, err)
 	}
 
-	// /proc/sys is typically masked by a read-only bind mount inside the
-	// container, so the remount must carry MS_BIND together with MS_REMOUNT.
+	// The target is mounted read-only inside the container, so the remount
+	// must carry MS_BIND together with MS_REMOUNT.
 	// Omitting MS_RDONLY in the flags clears the read-only bit.
-	if err := unix.Mount("", "/proc/sys", "", unix.MS_REMOUNT|unix.MS_BIND, ""); err != nil {
-		return fmt.Errorf("remount /proc/sys rw (pid=%d): %w", pid, err)
+	if err := unix.Mount("", target, "", unix.MS_REMOUNT|unix.MS_BIND, ""); err != nil {
+		return fmt.Errorf("remount %s rw (pid=%d): %w", target, pid, err)
 	}
 	return nil
 }
