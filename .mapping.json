@@ -38,5 +38,8 @@
   "cmd/portoshim/volume.go":"infra/porto/plugins/portoshim/cmd/portoshim/volume.go",
   "docs/images/container_runtimes.svg":"infra/porto/plugins/portoshim/docs/images/container_runtimes.svg",
   "go.mod":"infra/porto/plugins/portoshim/go.mod",
-  "go.sum":"infra/porto/plugins/portoshim/go.sum"
+  "go.sum":"infra/porto/plugins/portoshim/go.sum",
+  "tests/env/noble-6.12/env_ut.py":"infra/porto/plugins/portoshim/tests/env/noble-6.12/env_ut.py",
+  "tests/ut/conftest.py":"infra/porto/plugins/portoshim/tests/ut/conftest.py",
+  "tests/ut/portoshim_tests.py":"infra/porto/plugins/portoshim/tests/ut/portoshim_tests.py"
 }
