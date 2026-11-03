@@ -1684,14 +1684,22 @@ func (m *PortoshimRuntimeMapper) CreateContainer(ctx context.Context, req *v1.Cr
 		}
 	}
 
-	// mounts
+	// CDI devices requested by device plugins
+	cdiDevices := cdiRequestedDevices(req.GetConfig().GetAnnotations())
+	DebugLog(ctx, "resolve CDI devices: %+v", cdiDevices)
+	cdi, err := resolveCDIDevices(ctx, cdiDevices, Cfg.CDI.SpecDirs)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+	}
+
+	// mounts; CDI mounts are linked after the root is created
 	DebugLog(ctx, "prepare container mounts: %+v", req.GetConfig().GetMounts())
 
 	prepareContainerMounts(ctx, id, volumes, req.GetConfig().GetMounts(), waitPathes)
 
 	// devices
 	DebugLog(ctx, "prepare container devices: %+v", id)
-	prepareContainerDevices(containerSpec, req.GetConfig().GetDevices())
+	prepareContainerDevices(containerSpec, append(req.GetConfig().GetDevices(), cdi.Devices...))
 
 	// spec for UpdateFromSpec for sandbox container
 	devicesExplicitValue := true
@@ -1715,6 +1723,21 @@ func (m *PortoshimRuntimeMapper) CreateContainer(ctx context.Context, req *v1.Cr
 		return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
 	}
 
+	// CDI mounts and hooks: after the root is created, before the start
+	if len(cdi.Mounts) > 0 || len(cdi.Hooks) > 0 {
+		rootPath, err := pc.GetProperty(id, "root_path")
+		if err == nil {
+			err = linkCDIMounts(ctx, pc, id, rootPath, cdi.Mounts)
+		}
+		if err == nil {
+			err = runCDIHooks(ctx, id, rootPath, cdi.Hooks)
+		}
+		if err != nil {
+			_ = pc.Destroy(id)
+			return nil, fmt.Errorf("%s: %v", getCurrentFuncName(), err)
+		}
+	}
+
 	// spec reinitialization for UpdateFromSpec
 	containerSpec = &pb.TContainerSpec{
 		Name: &id,
@@ -1723,7 +1746,7 @@ func (m *PortoshimRuntimeMapper) CreateContainer(ctx context.Context, req *v1.Cr
 	// Container prepare order is mandatory!
 	// env and command MUST be prepared ONLY AFTER container chroot ready
 	DebugLog(ctx, "prepare container environment variables: %+v and %+v", req.GetConfig().GetEnvs(), image.GetConfig().GetEnv())
-	prepareEnv(ctx, containerSpec, req.GetConfig().GetEnvs(), image)
+	prepareEnv(ctx, containerSpec, append(req.GetConfig().GetEnvs(), cdi.Envs...), image)
 
 	// command + args
 	DebugLog(ctx,

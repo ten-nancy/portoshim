@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -95,5 +96,23 @@ func TestInitConfig(t *testing.T) {
 	initFakeConfig(t)
 	if Cfg.Images.PauseImage != pauseImage {
 		t.Fatalf("Pause image not equal")
+	}
+}
+
+func TestInitConfigCDISpecDirs(t *testing.T) {
+	initFakeConfig(t)
+	if want := []string{"/etc/cdi", "/var/run/cdi"}; !reflect.DeepEqual(Cfg.CDI.SpecDirs, want) {
+		t.Fatalf("default CDI spec dirs %v, want %v", Cfg.CDI.SpecDirs, want)
+	}
+
+	path := filepath.Join(t.TempDir(), "portoshim.yaml")
+	if err := os.WriteFile(path, []byte("CDI:\n    SpecDirs:\n        - /opt/cdi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := InitConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"/opt/cdi"}; !reflect.DeepEqual(Cfg.CDI.SpecDirs, want) {
+		t.Fatalf("configured CDI spec dirs %v, want %v", Cfg.CDI.SpecDirs, want)
 	}
 }

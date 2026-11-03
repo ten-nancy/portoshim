@@ -42,6 +42,11 @@ type PortoshimConfig struct {
 		Registries []RegistryInfo `yaml:"Registries"`
 		Place      string         `yaml:"Place"`
 	} `yaml:"Images"`
+
+	CDI struct {
+		// Spec directories in increasing priority, as in containerd.
+		SpecDirs []string `yaml:"SpecDirs"`
+	} `yaml:"CDI"`
 }
 
 var defaultConfig = `
@@ -65,6 +70,10 @@ StreamingServer:
     Port:    7255
 Images:
     PauseImage: registry.k8s.io/pause:3.7
+CDI:
+    SpecDirs:
+        - /etc/cdi
+        - /var/run/cdi
 `
 
 var Cfg *PortoshimConfig

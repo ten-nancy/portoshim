@@ -17,6 +17,8 @@
   "build/packages/portoshim/debian/portoshim.service":"infra/porto/plugins/portoshim/build/packages/portoshim/debian/portoshim.service",
   "build/packages/portoshim/debian/rules":"infra/porto/plugins/portoshim/build/packages/portoshim/debian/rules",
   "cmd/logshim/main.go":"infra/porto/plugins/portoshim/cmd/logshim/main.go",
+  "cmd/portoshim/cdi.go":"infra/porto/plugins/portoshim/cmd/portoshim/cdi.go",
+  "cmd/portoshim/cdi_test.go":"infra/porto/plugins/portoshim/cmd/portoshim/cdi_test.go",
   "cmd/portoshim/config.go":"infra/porto/plugins/portoshim/cmd/portoshim/config.go",
   "cmd/portoshim/config_test.go":"infra/porto/plugins/portoshim/cmd/portoshim/config_test.go",
   "cmd/portoshim/cri_api.go":"infra/porto/plugins/portoshim/cmd/portoshim/cri_api.go",
